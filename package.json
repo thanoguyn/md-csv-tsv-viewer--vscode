@@ -1,0 +1,99 @@
+{
+    "name": "mdviewer-vscode",
+    "displayName": "MD/CSV/TSV Viewer",
+    "description": "Open Markdown, CSV, and TSV files in a viewer-first VS Code custom editor.",
+    "version": "0.1.3",
+    "publisher": "ThanOguyn",
+    "license": "MIT",
+    "engines": {
+        "vscode": "^1.88.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "onCustomEditor:mdviewer.viewer",
+        "onCommand:mdviewer.openView",
+        "onCommand:mdviewer.openEdit"
+    ],
+    "main": "./extension.js",
+    "contributes": {
+        "configurationDefaults": {
+            "workbench.editorAssociations": {
+                "*.md": "mdviewer.viewer",
+                "*.markdown": "mdviewer.viewer",
+                "*.mdown": "mdviewer.viewer",
+                "*.mkd": "mdviewer.viewer",
+                "*.csv": "mdviewer.viewer",
+                "*.tsv": "mdviewer.viewer"
+            }
+        },
+        "commands": [{
+                "command": "mdviewer.openView",
+                "title": "Open in MD Viewer",
+                "category": "MD Viewer",
+                "icon": "$(preview)"
+            },
+            {
+                "command": "mdviewer.openEdit",
+                "title": "Open as Text",
+                "category": "MD Viewer",
+                "icon": "$(edit)"
+            }
+        ],
+        "customEditors": [{
+            "viewType": "mdviewer.viewer",
+            "displayName": "MD Viewer",
+            "selector": [{
+                    "filenamePattern": "*.md"
+                },
+                {
+                    "filenamePattern": "*.markdown"
+                },
+                {
+                    "filenamePattern": "*.mdown"
+                },
+                {
+                    "filenamePattern": "*.mkd"
+                },
+                {
+                    "filenamePattern": "*.csv"
+                },
+                {
+                    "filenamePattern": "*.tsv"
+                }
+            ],
+            "priority": "default"
+        }],
+        "keybindings": [{
+            "command": "mdviewer.openView",
+            "key": "ctrl+alt+v",
+            "mac": "cmd+alt+v",
+            "when": "editorTextFocus && resourceExtname =~ /\\.(md|markdown|mdown|mkd|csv|tsv)$/"
+        }],
+        "menus": {
+            "editor/title": [{
+                    "command": "mdviewer.openView",
+                    "when": "resourceExtname =~ /\\.(md|markdown|mdown|mkd|csv|tsv)$/",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "mdviewer.openEdit",
+                    "when": "activeCustomEditorId == 'mdviewer.viewer'",
+                    "group": "navigation@1"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "lint": "node --check extension.js && node --check media/vscodeViewer.js && node --check media/markdown.js && node --check media/markdownEnhancer.js && node --check media/tabular.js",
+        "package": "vsce package --allow-missing-repository",
+        "publish": "vsce publish --allow-missing-repository",
+        "local": "windsurf --install-extension mdviewer-vscode-0.1.3.vsix"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.88.0",
+        "html2canvas": "^1.4.1",
+        "jspdf": "^4.2.1"
+    }
+}
