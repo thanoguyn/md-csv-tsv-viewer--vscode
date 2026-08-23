@@ -58,7 +58,8 @@ class MdViewerEditorProvider {
     webviewPanel.webview.options = {
       enableScripts: true,
       localResourceRoots: [
-        vscode.Uri.joinPath(this.context.extensionUri, "media")
+        vscode.Uri.joinPath(this.context.extensionUri, "media"),
+        ...localResourceRootsForDocument(document.uri)
       ]
     };
 
@@ -96,6 +97,9 @@ class MdViewerEditorProvider {
     webviewPanel.webview.onDidReceiveMessage(async (message) => {
       if (message?.type === "openEdit") {
         await openEdit(document.uri, webviewPanel.viewColumn);
+      } else if (message?.type === "focusViewer") {
+        webviewPanel.reveal(webviewPanel.viewColumn, false);
+        await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
       } else if (message?.type === "saveCopy") {
         await saveCopy(document, message);
       } else if (message?.type === "exportPdf") {
@@ -171,6 +175,7 @@ class MdViewerEditorProvider {
     <script nonce="${nonce}">
       window.__MD_VIEWER_INITIAL__ = ${safeJson(initialDocument)};
       window.__MD_VIEWER_ASSETS__ = ${safeJson(assets)};
+      window.__MD_VIEWER_BASE_URI__ = ${safeJson(webviewBaseUriForDocument(webview, document.uri))};
     </script>
     <script nonce="${nonce}" src="${media("markdown.js")}"></script>
     <script nonce="${nonce}" src="${media("tabular.js")}"></script>
@@ -246,6 +251,19 @@ function postDocumentText(webview, documentInfo) {
     kind: detectKind(documentInfo.uri.fsPath || documentInfo.uri.toString(), documentInfo.languageId),
     filename: filenameFromUri(documentInfo.uri)
   });
+}
+
+function localResourceRootsForDocument(uri) {
+  if (uri.scheme !== "file" || !uri.fsPath) return [];
+  return [vscode.Uri.file(path.dirname(uri.fsPath))];
+}
+
+function webviewBaseUriForDocument(webview, uri) {
+  if (uri.scheme !== "file" || !uri.fsPath) return "";
+  const directoryPath = path.dirname(uri.fsPath);
+  const directoryUri = vscode.Uri.file(directoryPath.endsWith(path.sep) ? directoryPath : `${directoryPath}${path.sep}`);
+  const baseUri = String(webview.asWebviewUri(directoryUri));
+  return baseUri.endsWith("/") ? baseUri : `${baseUri}/`;
 }
 
 function createDocumentWatcher(uri) {

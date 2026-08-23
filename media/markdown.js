@@ -1,5 +1,9 @@
 (function () {
-  const urlPattern = /^(https?:|mailto:|tel:|#|\/|\.\/|\.\.\/)/i;
+  const safeLinkSchemePattern = /^(https?:|mailto:|tel:|#)/i;
+  const safeImageSchemePattern = /^(https?:|#)/i;
+  const imageDataPattern = /^data:image\/(?:png|gif|jpe?g|webp|svg\+xml);base64,/i;
+  const explicitSchemePattern = /^[a-z][a-z0-9+.-]*:/i;
+  const relativePathPattern = /^(?:\/|\.\/|\.\.\/|[^:/?#]+(?:[/?#]|$))/;
 
   function escapeHtml(value) {
     return String(value)
@@ -10,10 +14,38 @@
       .replaceAll("'", "&#039;");
   }
 
-  function sanitizeUrl(value) {
+  function sanitizeUrl(value, options = {}) {
     const trimmed = String(value || "").trim();
     if (!trimmed) return "#";
-    return urlPattern.test(trimmed) ? escapeHtml(trimmed) : "#";
+    if ((options.image ? safeImageSchemePattern : safeLinkSchemePattern).test(trimmed)) return escapeHtml(trimmed);
+    if (options.image && imageDataPattern.test(trimmed)) return escapeHtml(trimmed);
+    if (explicitSchemePattern.test(trimmed)) return "#";
+    if (!relativePathPattern.test(trimmed)) return "#";
+
+    const baseUri = String(window.__MD_VIEWER_BASE_URI__ || "");
+    if (!baseUri) return escapeHtml(trimmed);
+
+    try {
+      return escapeHtml(new URL(trimmed, baseUri).toString());
+    } catch {
+      return "#";
+    }
+  }
+
+  function normalizeLinkDestination(value) {
+    const trimmed = String(value || "").trim();
+    if (trimmed.startsWith("<") && trimmed.endsWith(">")) return trimmed.slice(1, -1).trim();
+    return trimmed;
+  }
+
+  function stashHtml(tokens, html) {
+    const token = `\uE000MDVIEWER${tokens.length}\uE001`;
+    tokens.push(html);
+    return token;
+  }
+
+  function restoreHtmlTokens(value, tokens) {
+    return value.replace(/\uE000MDVIEWER(\d+)\uE001/g, (_, index) => tokens[Number(index)] || "");
   }
 
   function slugify(value) {
@@ -26,24 +58,28 @@
   }
 
   function inlineMarkdown(value) {
-    let output = escapeHtml(value);
+    const tokens = [];
+    let output = String(value || "");
 
-    output = output.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
-    output = output.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]+)")?\)/g, (_, alt, src, title) => {
+    output = output.replace(/`([^`]+)`/g, (_, code) => stashHtml(tokens, `<code>${escapeHtml(code)}</code>`));
+    output = output.replace(/(!?)\[([^\]]*)\]\s*\(\s*(<[^>]+>|[^\s)]+)(?:\s+(?:"([^"]*)"|'([^']*)'|\(([^)]*)\)))?\s*\)/g, (_, bang, text, destination, doubleTitle, singleTitle, parenTitle) => {
+      const title = doubleTitle ?? singleTitle ?? parenTitle ?? "";
+      const src = normalizeLinkDestination(destination);
       const safeTitle = title ? ` title="${escapeHtml(title)}"` : "";
-      return `<img src="${sanitizeUrl(src)}" alt="${escapeHtml(alt)}"${safeTitle}>`;
+      if (bang) {
+        return stashHtml(tokens, `<img src="${sanitizeUrl(src, { image: true })}" alt="${escapeHtml(text)}"${safeTitle}>`);
+      }
+      return stashHtml(tokens, `<a href="${sanitizeUrl(src)}"${safeTitle} target="_blank" rel="noreferrer noopener">${inlineMarkdown(text)}</a>`);
     });
-    output = output.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]+)")?\)/g, (_, text, href, title) => {
-      const safeTitle = title ? ` title="${escapeHtml(title)}"` : "";
-      return `<a href="${sanitizeUrl(href)}"${safeTitle} target="_blank" rel="noreferrer noopener">${inlineMarkdown(text)}</a>`;
-    });
+
+    output = escapeHtml(output);
     output = output.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     output = output.replace(/__([^_]+)__/g, "<strong>$1</strong>");
     output = output.replace(/\*([^*]+)\*/g, "<em>$1</em>");
     output = output.replace(/_([^_]+)_/g, "<em>$1</em>");
     output = output.replace(/~~([^~]+)~~/g, "<del>$1</del>");
 
-    return output;
+    return restoreHtmlTokens(output, tokens);
   }
 
   function parseTable(lines, start) {

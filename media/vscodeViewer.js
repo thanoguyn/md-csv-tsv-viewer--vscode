@@ -31,6 +31,7 @@
   };
   let markdownAllSelected = false;
   let selectionContextMenu = null;
+  let lastFocusRequestAt = 0;
   const findState = {
     bar: null,
     input: null,
@@ -50,6 +51,8 @@
   toggleSource.checked = localStorage.getItem(sourceStorageKey) === "true";
   toggleToc.checked = localStorage.getItem(tocStorageKey) === "true";
   document.body.classList.toggle("is-toolbar-hidden", localStorage.getItem(toolbarHiddenStorageKey) === "true");
+  dropZone.tabIndex = -1;
+  window.__mdViewerFocusSurface = focusViewerSurface;
   window.__mdViewerSaveCopy = (filename, text) => {
     vscode.postMessage({
       type: "saveCopy",
@@ -74,6 +77,7 @@
   document.addEventListener("contextmenu", handleSelectionContextMenu);
   document.addEventListener("click", hideSelectionContextMenu);
   document.addEventListener("scroll", hideSelectionContextMenu, true);
+  document.addEventListener("pointerdown", handleViewerPointerDown, true);
   initializeFindBar();
 
   toggleFullWidth.addEventListener("change", () => {
@@ -113,6 +117,7 @@
     const { kind, meta, text } = currentDocument;
     const isDelimited = kind === "csv" || kind === "tsv";
     const isSource = toggleSource.checked;
+    window.MDViewerTabular.clearMarkdownTableSelection?.();
     toggleSource.disabled = false;
     toggleFullWidth.disabled = isDelimited;
     toggleToc.disabled = isDelimited || isSource;
@@ -232,9 +237,17 @@
     } else if (key === "p") {
       event.preventDefault();
       exportPdf();
+    } else if (key === " ") {
+      if (window.MDViewerTabular.openHoveredMarkdownTableGrid?.(event.target)) {
+        event.preventDefault();
+      }
     } else if (key === "w") {
       event.preventDefault();
       window.MDViewerTabular.toggleWrap(document);
+    } else if (key === "v") {
+      event.preventDefault();
+      const enabled = window.MDViewerTabular.toggleMarkdownTableSelection?.(event.target);
+      if (enabled !== null && enabled !== undefined) showToast(enabled ? "Table selection on" : "Table selection off");
     } else if (key === "u") {
       event.preventDefault();
       const format = window.MDViewerTabular.toggleNumberFormat();
@@ -254,6 +267,25 @@
     const nextHidden = !document.body.classList.contains("is-toolbar-hidden");
     document.body.classList.toggle("is-toolbar-hidden", nextHidden);
     localStorage.setItem(toolbarHiddenStorageKey, String(nextHidden));
+  }
+
+  function handleViewerPointerDown(event) {
+    if (!event.target?.closest?.("#dropZone")) return;
+    if (isTextInput(event.target)) return;
+    focusViewerSurface();
+  }
+
+  function focusViewerSurface() {
+    window.focus();
+    dropZone.focus({ preventScroll: true });
+    requestViewerFocus();
+  }
+
+  function requestViewerFocus() {
+    const now = Date.now();
+    if (now - lastFocusRequestAt < 250) return;
+    lastFocusRequestAt = now;
+    vscode.postMessage({ type: "focusViewer" });
   }
 
   async function copyCurrentContent({ source }) {
@@ -286,6 +318,7 @@
   function selectVisibleContent() {
     markdownAllSelected = false;
     if (!dataGrid.hidden && window.MDViewerTabular.selectAllActiveGrid()) return;
+    if (!preview.hidden && window.MDViewerTabular.selectAllActiveMarkdownTable?.()) return;
 
     const target = !sourceView.hidden ? sourceCode : preview;
     if (!target || target.hidden) return;
@@ -1231,11 +1264,11 @@
           <h3>Open and edit</h3>
           <p>Supported files open in viewer mode. Press E or the Edit button to switch to VS Code text editing. Use the Open in MD Viewer editor title button or Command/Ctrl+Alt+V to return to viewer mode.</p>
           <h3>Markdown</h3>
-          <p>Markdown supports tables, code block copy, Mermaid diagrams, heading section copy/select, TOC, source toggle, PDF export, dark mode, and full-width mode.</p>
+          <p>Markdown supports tables with saved V-key cell/range/column selection for all tables, code block copy, Mermaid diagrams, heading section copy/select, TOC, source toggle, PDF export, dark mode, and full-width mode.</p>
           <h3>Tables</h3>
           <p>CSV and TSV files open as an interactive grid with sorting, filters, range selection, copy, download, and numeric parsing controls.</p>
           <h3>Shortcuts</h3>
-          <p>E opens the text editor. Command/Ctrl+Alt+V returns to viewer mode from edit mode. Command/Ctrl+F opens find. Control+B hides or shows the toolbar. F toggles full width. T toggles TOC. S toggles source. W toggles wrap. U toggles Auto/VN/US number parsing. H toggles first row as header. D saves a copy. P exports PDF. C copies rendered content. Shift+C copies source. Command/Ctrl+A selects viewer/table content.</p>
+          <p>E opens the text editor. Command/Ctrl+Alt+V returns to viewer mode from edit mode. Command/Ctrl+F opens find. Control+B hides or shows the toolbar. F toggles full width. T toggles TOC. S toggles source. [space] opens the hovered Markdown table as Grid. W toggles wrap. V toggles saved Markdown table selection for all tables. U toggles Auto/VN/US number parsing. H toggles first row as header. D saves a copy. P exports PDF. C copies rendered content. Shift+C copies source. Command/Ctrl+A selects viewer/table content.</p>
         </div>
       </div>
     `;

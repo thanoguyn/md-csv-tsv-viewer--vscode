@@ -2,7 +2,7 @@
     "name": "mdviewer-vscode",
     "displayName": "MD/CSV/TSV Viewer",
     "description": "Open Markdown, CSV, and TSV files in a viewer-first VS Code custom editor.",
-    "version": "0.1.3",
+    "version": "0.1.6",
     "publisher": "ThanOguyn",
     "license": "MIT",
     "engines": {
@@ -89,7 +89,7 @@
         "lint": "node --check extension.js && node --check media/vscodeViewer.js && node --check media/markdown.js && node --check media/markdownEnhancer.js && node --check media/tabular.js",
         "package": "vsce package --allow-missing-repository",
         "publish": "vsce publish --allow-missing-repository",
-        "local": "windsurf --install-extension mdviewer-vscode-0.1.3.vsix"
+        "local": "devin-desktop --install-extension mdviewer-vscode-0.1.6.vsix"
     },
     "devDependencies": {
         "@types/vscode": "^1.88.0",

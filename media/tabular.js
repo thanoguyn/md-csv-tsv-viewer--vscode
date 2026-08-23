@@ -3,13 +3,17 @@
   const filterRowStorageKey = "md-viewer-filter-row-visible";
   const filterModeStorageKey = "md-viewer-filter-mode";
   const numberFormatStorageKey = "md-viewer-number-format";
+  const markdownTableSelectionStorageKey = "md-viewer-markdown-table-selection-mode";
   const gridSelectionClass = "is-selected";
+  const markdownTableSelectionModeClass = "is-table-selection-mode";
   const defaultColumnWidth = 160;
   const minColumnWidth = 144;
   const maxFitColumnWidth = 420;
   const maxLayoutColumnWidth = 640;
   const rowHeaderWidth = 48;
   let activeGrid = null;
+  let activeMarkdownTable = null;
+  let hoveredMarkdownTable = null;
   let gridContextMenu = null;
   let activeResize = null;
   let filterTimer = null;
@@ -19,6 +23,7 @@
   document.addEventListener("scroll", hideGridContextMenu, true);
   document.addEventListener("mousemove", handleColumnResizeMove);
   document.addEventListener("mouseup", handleColumnResizeEnd);
+  document.addEventListener("mouseup", handleMarkdownTableMouseUp);
 
   function detectKind(source, contentType) {
     const normalizedSource = String(source || "").toLowerCase().split(/[?#]/)[0];
@@ -80,10 +85,12 @@
   function decorateTables(root) {
     const tables = Array.from(root.querySelectorAll("table:not([data-copy-ready])"));
     const wrapEnabled = getWrapState();
+    const selectionModeEnabled = getMarkdownTableSelectionState();
 
     tables.forEach((table) => {
       table.dataset.copyReady = "true";
       table.classList.toggle("is-wrapped", wrapEnabled);
+      indexMarkdownTableCells(table);
 
       const shell = document.createElement("div");
       shell.className = "table-viewer";
@@ -113,6 +120,18 @@
       const wrapText = document.createElement("span");
       wrapText.textContent = "Wrap";
       wrapLabel.append(wrapInput, wrapText);
+
+      const selectLabel = document.createElement("label");
+      selectLabel.className = "switch-control";
+      selectLabel.title = "Toggle Markdown table selection for all tables";
+
+      const selectInput = document.createElement("input");
+      selectInput.type = "checkbox";
+      selectInput.className = "table-selection-toggle-input";
+
+      const selectText = document.createElement("span");
+      selectText.textContent = "Select";
+      selectLabel.append(selectInput, selectText);
 
       const copyButton = document.createElement("button");
       copyButton.type = "button";
@@ -152,10 +171,28 @@
       const scroller = document.createElement("div");
       scroller.className = "table-scroll";
 
+      table.addEventListener("mousedown", handleMarkdownTableMouseDown);
+      table.addEventListener("mouseover", handleMarkdownTableMouseOver);
+      table.addEventListener("contextmenu", handleMarkdownTableContextMenu);
+      table.addEventListener("mouseenter", () => {
+        window.__mdViewerFocusSurface?.();
+        hoveredMarkdownTable = table;
+      });
+      table.addEventListener("mouseleave", () => {
+        if (hoveredMarkdownTable === table) hoveredMarkdownTable = null;
+      });
+      const selection = markdownTableSelection(table);
+      selection.shell = shell;
+      selection.toggleInput = selectInput;
+      selectInput.addEventListener("change", () => {
+        setMarkdownTableSelectionEnabled(selectInput.checked, document, table);
+      });
+      setMarkdownTableSelectionMode(table, selectionModeEnabled);
+
       table.parentNode.insertBefore(shell, table);
       shell.append(toolbar, scroller);
       toolbar.append(label, controls);
-      controls.append(wrapLabel, gridButton, copyButton, copyBodyButton, csvButton, tsvButton);
+      controls.append(wrapLabel, selectLabel, gridButton, copyButton, copyBodyButton, csvButton, tsvButton);
       scroller.appendChild(table);
     });
   }
@@ -319,6 +356,19 @@
     activeGrid = null;
   }
 
+  function clearMarkdownTableSelection() {
+    document.querySelectorAll("table[data-copy-ready]").forEach((table) => {
+      const selection = markdownTableSelection(table);
+      selection.ranges = [];
+      selection.activeIndex = -1;
+      selection.dragging = false;
+      selection.anchor = null;
+      paintMarkdownTableSelection(table);
+    });
+    activeMarkdownTable = null;
+    hoveredMarkdownTable = null;
+  }
+
   function selectAllActiveGrid() {
     if (!activeGrid?.container) return false;
 
@@ -337,6 +387,50 @@
     activeGrid.selection.dragging = false;
     activeGrid.selection.anchor = { row: 0, column: 0 };
     paintSelection(activeGrid.container);
+    return true;
+  }
+
+  function selectAllActiveMarkdownTable() {
+    if (!activeMarkdownTable) return false;
+
+    const selection = markdownTableSelection(activeMarkdownTable);
+    if (!selection.enabled) return false;
+
+    const dimensions = markdownTableDimensions(activeMarkdownTable);
+    if (!dimensions.rows || !dimensions.columns) return false;
+
+    selection.ranges = [
+      {
+        anchorRow: 0,
+        anchorColumn: 0,
+        focusRow: dimensions.rows - 1,
+        focusColumn: dimensions.columns - 1
+      }
+    ];
+    selection.activeIndex = 0;
+    selection.dragging = false;
+    selection.anchor = { row: 0, column: 0 };
+    paintMarkdownTableSelection(activeMarkdownTable);
+    return true;
+  }
+
+  function toggleMarkdownTableSelection(target) {
+    const tables = Array.from(document.querySelectorAll("table[data-copy-ready]"));
+    if (!tables.length) return null;
+
+    const targetTable = target?.closest?.("table[data-copy-ready]") || hoveredMarkdownTable || activeMarkdownTable || tables[0];
+    const nextEnabled = !getMarkdownTableSelectionState();
+    setMarkdownTableSelectionEnabled(nextEnabled, document, targetTable);
+    return nextEnabled;
+  }
+
+  function openHoveredMarkdownTableGrid(target) {
+    if (document.body.classList.contains("has-grid-modal")) return false;
+
+    const targetTable = target?.closest?.("table[data-copy-ready]") || hoveredMarkdownTable;
+    if (!targetTable) return false;
+
+    openTableGrid(targetTable);
     return true;
   }
 
@@ -861,7 +955,9 @@
     if (!cell || !activeGrid) return;
     if (event.button !== 0) return;
 
+    window.__mdViewerFocusSurface?.();
     event.preventDefault();
+    requestAnimationFrame(() => window.__mdViewerFocusSurface?.());
     blurFocusedFilterInput();
     activeGrid.container = cell.closest(".data-grid-view");
     startSelection(activeGrid.container, Number(cell.dataset.row), Number(cell.dataset.column), Number(cell.dataset.row), Number(cell.dataset.column), event);
@@ -903,10 +999,19 @@
 
   function handleGridCopyShortcut(event) {
     const isCopy = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c";
-    if (!isCopy || !hasSelection() || !activeGrid.container || isTextInput(event.target)) return;
+    if (!isCopy || isTextInput(event.target)) return;
 
-    event.preventDefault();
-    copyText(selectedGridText(activeGrid.container, { normalizeNumbers: event.shiftKey }));
+    if (hasSelection() && activeGrid?.container) {
+      event.preventDefault();
+      copyText(selectedGridText(activeGrid.container, { normalizeNumbers: event.shiftKey }));
+      return;
+    }
+
+    const tableText = activeMarkdownTableSelectionText();
+    if (tableText) {
+      event.preventDefault();
+      copyText(tableText);
+    }
   }
 
   function handleGridContextMenu(event) {
@@ -935,17 +1040,317 @@
     showGridContextMenu(event.clientX, event.clientY, container);
   }
 
+  function indexMarkdownTableCells(table) {
+    Array.from(table.querySelectorAll("tr")).forEach((row, rowIndex) => {
+      Array.from(row.children).forEach((cell, columnIndex) => {
+        cell.dataset.mdRow = String(rowIndex);
+        cell.dataset.mdColumn = String(columnIndex);
+      });
+    });
+  }
+
+  function markdownTableSelection(table) {
+    if (!table.__mdViewerSelection) {
+      table.__mdViewerSelection = {
+        enabled: false,
+        ranges: [],
+        activeIndex: -1,
+        dragging: false,
+        anchor: null,
+        shell: null,
+        toggleInput: null
+      };
+    }
+
+    return table.__mdViewerSelection;
+  }
+
+  function setMarkdownTableSelectionMode(table, enabled) {
+    const selection = markdownTableSelection(table);
+    selection.enabled = enabled;
+    selection.shell?.classList.toggle(markdownTableSelectionModeClass, enabled);
+    table.classList.toggle(markdownTableSelectionModeClass, enabled);
+
+    if (!enabled) {
+      selection.ranges = [];
+      selection.activeIndex = -1;
+      selection.dragging = false;
+      selection.anchor = null;
+      if (activeMarkdownTable === table) activeMarkdownTable = null;
+    }
+
+    paintMarkdownTableSelection(table);
+  }
+
+  function setMarkdownTableSelectionEnabled(enabled, root = document, activeTable = null) {
+    localStorage.setItem(markdownTableSelectionStorageKey, String(enabled));
+    const tables = Array.from(root.querySelectorAll("table[data-copy-ready]"));
+    tables.forEach((table) => setMarkdownTableSelectionMode(table, enabled));
+
+    if (enabled) {
+      activeMarkdownTable = activeTable || hoveredMarkdownTable || activeMarkdownTable || tables[0] || null;
+      window.getSelection()?.removeAllRanges();
+    } else {
+      activeMarkdownTable = null;
+    }
+  }
+
+  function getMarkdownTableSelectionState() {
+    return localStorage.getItem(markdownTableSelectionStorageKey) === "true";
+  }
+
+  function handleMarkdownTableMouseDown(event) {
+    const table = event.currentTarget;
+    const selection = markdownTableSelection(table);
+    if (!selection.enabled || event.button !== 0) return;
+
+    const cell = event.target.closest("th, td");
+    if (!cell || !table.contains(cell)) return;
+
+    window.__mdViewerFocusSurface?.();
+    event.preventDefault();
+    requestAnimationFrame(() => window.__mdViewerFocusSurface?.());
+    hideGridContextMenu();
+    activeMarkdownTable = table;
+    window.getSelection()?.removeAllRanges();
+
+    const row = Number(cell.dataset.mdRow);
+    const column = Number(cell.dataset.mdColumn);
+    if (!Number.isFinite(row) || !Number.isFinite(column)) return;
+
+    if (cell.tagName.toLowerCase() === "th") {
+      startMarkdownTableColumnSelection(table, column, event);
+      paintMarkdownTableSelection(table);
+      return;
+    }
+
+    startMarkdownTableSelection(table, row, column, row, column, event);
+    paintMarkdownTableSelection(table);
+  }
+
+  function handleMarkdownTableMouseOver(event) {
+    const table = event.currentTarget;
+    const selection = markdownTableSelection(table);
+    if (!selection.enabled || !selection.dragging) return;
+
+    const cell = event.target.closest("th, td");
+    if (!cell || !table.contains(cell)) return;
+
+    const range = selection.ranges[selection.activeIndex];
+    if (range) {
+      range.focusColumn = Number(cell.dataset.mdColumn);
+      if (range.excludeHeaderOnCopy) {
+        range.focusRow = Math.max(0, markdownTableDimensions(table).rows - 1);
+      } else {
+        range.focusRow = Number(cell.dataset.mdRow);
+      }
+    }
+    paintMarkdownTableSelection(table);
+  }
+
+  function handleMarkdownTableMouseUp() {
+    if (!activeMarkdownTable) return;
+    markdownTableSelection(activeMarkdownTable).dragging = false;
+  }
+
+  function handleMarkdownTableContextMenu(event) {
+    const table = event.currentTarget;
+    const selection = markdownTableSelection(table);
+    if (!selection.enabled) return;
+
+    const cell = event.target.closest("th, td");
+    if (!cell || !table.contains(cell)) return;
+
+    window.__mdViewerFocusSurface?.();
+    event.preventDefault();
+    requestAnimationFrame(() => window.__mdViewerFocusSurface?.());
+    activeMarkdownTable = table;
+
+    const row = Number(cell.dataset.mdRow);
+    const column = Number(cell.dataset.mdColumn);
+    if (!isMarkdownTableCellSelected(table, row, column)) {
+      selection.ranges = [
+        {
+          anchorRow: row,
+          anchorColumn: column,
+          focusRow: row,
+          focusColumn: column
+        }
+      ];
+      selection.activeIndex = 0;
+      selection.anchor = { row, column };
+      selection.dragging = false;
+      paintMarkdownTableSelection(table);
+    }
+
+    showGridContextMenu(event.clientX, event.clientY, null);
+  }
+
+  function startMarkdownTableSelection(table, anchorRow, anchorColumn, focusRow, focusColumn, event) {
+    const selection = markdownTableSelection(table);
+    const range = { anchorRow, anchorColumn, focusRow, focusColumn };
+
+    if (event.shiftKey && selection.anchor) {
+      range.anchorRow = selection.anchor.row;
+      range.anchorColumn = selection.anchor.column;
+      selection.ranges = [range];
+      selection.activeIndex = 0;
+    } else if (event.metaKey || event.ctrlKey) {
+      selection.ranges.push(range);
+      selection.activeIndex = selection.ranges.length - 1;
+      selection.anchor = { row: anchorRow, column: anchorColumn };
+    } else {
+      selection.ranges = [range];
+      selection.activeIndex = 0;
+      selection.anchor = { row: anchorRow, column: anchorColumn };
+    }
+
+    selection.dragging = true;
+  }
+
+  function startMarkdownTableColumnSelection(table, columnIndex, event) {
+    const selection = markdownTableSelection(table);
+    const dimensions = markdownTableDimensions(table);
+    const lastRow = Math.max(0, dimensions.rows - 1);
+    const range = {
+      anchorRow: 0,
+      anchorColumn: columnIndex,
+      focusRow: lastRow,
+      focusColumn: columnIndex,
+      excludeHeaderOnCopy: true
+    };
+
+    if (event.shiftKey && selection.anchor) {
+      range.anchorColumn = selection.anchor.column;
+      selection.ranges = [range];
+      selection.activeIndex = 0;
+    } else if (event.metaKey || event.ctrlKey) {
+      selection.ranges.push(range);
+      selection.activeIndex = selection.ranges.length - 1;
+      selection.anchor = { row: 0, column: columnIndex };
+    } else {
+      selection.ranges = [range];
+      selection.activeIndex = 0;
+      selection.anchor = { row: 0, column: columnIndex };
+    }
+
+    selection.dragging = true;
+  }
+
+  function selectMarkdownTableColumn(table, columnIndex) {
+    startMarkdownTableColumnSelection(table, columnIndex, {
+      shiftKey: false,
+      metaKey: false,
+      ctrlKey: false
+    });
+    const selection = markdownTableSelection(table);
+    selection.dragging = false;
+    paintMarkdownTableSelection(table);
+  }
+
+  function paintMarkdownTableSelection(table) {
+    const selection = markdownTableSelection(table);
+    table.querySelectorAll(`th.${gridSelectionClass}, td.${gridSelectionClass}`).forEach((cell) => {
+      cell.classList.remove(gridSelectionClass);
+    });
+
+    if (!selection.ranges.length) {
+      updateMarkdownSelectionControls(table);
+      return;
+    }
+
+    normalizedMarkdownSelections(table).forEach(({ startRow, endRow, startColumn, endColumn }) => {
+      table.querySelectorAll("th, td").forEach((cell) => {
+        const row = Number(cell.dataset.mdRow);
+        const column = Number(cell.dataset.mdColumn);
+        if (row >= startRow && row <= endRow && column >= startColumn && column <= endColumn) {
+          cell.classList.add(gridSelectionClass);
+        }
+      });
+    });
+
+    updateMarkdownSelectionControls(table);
+  }
+
+  function updateMarkdownSelectionControls(table) {
+    const selection = markdownTableSelection(table);
+    if (selection.toggleInput) {
+      selection.toggleInput.checked = selection.enabled;
+    }
+  }
+
+  function normalizedMarkdownSelection(range) {
+    const { anchorRow, anchorColumn, focusRow, focusColumn, excludeHeaderOnCopy } = range;
+    return {
+      startRow: Math.min(anchorRow, focusRow),
+      endRow: Math.max(anchorRow, focusRow),
+      startColumn: Math.min(anchorColumn, focusColumn),
+      endColumn: Math.max(anchorColumn, focusColumn),
+      excludeHeaderOnCopy: Boolean(excludeHeaderOnCopy)
+    };
+  }
+
+  function normalizedMarkdownSelections(table) {
+    return markdownTableSelection(table).ranges.map(normalizedMarkdownSelection);
+  }
+
+  function isMarkdownTableCellSelected(table, row, column) {
+    return normalizedMarkdownSelections(table).some(({ startRow, endRow, startColumn, endColumn }) =>
+      row >= startRow && row <= endRow && column >= startColumn && column <= endColumn
+    );
+  }
+
+  function markdownTableDimensions(table) {
+    const rows = Array.from(table.querySelectorAll("tr"));
+    const columns = rows.reduce((maximum, row) => Math.max(maximum, row.children.length), 0);
+    return { rows: rows.length, columns };
+  }
+
+  function markdownTableSelectionText(table) {
+    const selection = markdownTableSelection(table);
+    if (!selection.enabled || !selection.ranges.length) return "";
+
+    const blocks = normalizedMarkdownSelections(table).map(({ startRow, endRow, startColumn, endColumn, excludeHeaderOnCopy }) => {
+      const rows = [];
+      const copyStartRow = excludeHeaderOnCopy ? Math.max(startRow, 1) : startRow;
+      for (let row = copyStartRow; row <= endRow; row += 1) {
+        const cells = [];
+        for (let column = startColumn; column <= endColumn; column += 1) {
+          const value = table.querySelector(`[data-md-row="${row}"][data-md-column="${column}"]`)?.textContent || "";
+          cells.push(value.replace(/\s+/g, " ").trim());
+        }
+        rows.push(cells.join("\t"));
+      }
+      return rows.join("\n");
+    });
+
+    return blocks.join("\n\n");
+  }
+
+  function activeMarkdownTableSelectionText() {
+    return activeMarkdownTable ? markdownTableSelectionText(activeMarkdownTable) : "";
+  }
+
   function showGridContextMenu(clientX, clientY, container) {
     hideGridContextMenu();
-    if (!hasSelection()) return;
+    const isGridSelection = Boolean(container && hasSelection());
+    const isMarkdownSelection = !container && Boolean(activeMarkdownTableSelectionText());
+    if (!isGridSelection && !isMarkdownSelection) return;
 
     const menu = document.createElement("div");
     menu.className = "grid-context-menu";
     menu.setAttribute("role", "menu");
 
-    const copyButton = gridContextMenuButton("Copy", () => selectedGridText(container));
-    const copyNumbersButton = gridContextMenuButton("Copy US numbers", () => selectedGridText(container, { normalizeNumbers: true }));
-    menu.append(copyButton, copyNumbersButton);
+    const copyButton = gridContextMenuButton("Copy", () => (
+      isGridSelection ? selectedGridText(container) : activeMarkdownTableSelectionText()
+    ));
+    menu.append(copyButton);
+
+    if (isGridSelection) {
+      const copyNumbersButton = gridContextMenuButton("Copy US numbers", () => selectedGridText(container, { normalizeNumbers: true }));
+      menu.append(copyNumbersButton);
+    }
+
     document.body.appendChild(menu);
 
     const rect = menu.getBoundingClientRect();
@@ -1796,15 +2201,19 @@
   window.MDViewerTabular = {
     decorateTables,
     clearActiveGrid,
+    clearMarkdownTableSelection,
     detectKind,
     parseDelimited,
     getActiveGridText,
     renderDataGrid,
     renderDataGridRows,
     selectAllActiveGrid,
+    selectAllActiveMarkdownTable,
+    openHoveredMarkdownTableGrid,
     setWrapEnabled,
     tableToDelimited,
     toggleHeaderRow,
+    toggleMarkdownTableSelection,
     toggleNumberFormat,
     toggleWrap
   };
