@@ -2,11 +2,15 @@
     "name": "mdviewer-vscode",
     "displayName": "MD/CSV/TSV Viewer",
     "description": "Open Markdown, CSV, and TSV files in a viewer-first VS Code custom editor.",
-    "version": "0.1.8",
+    "version": "0.1.10",
     "publisher": "ThanOguyn",
     "license": "MIT",
     "engines": {
         "vscode": "^1.88.0"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/thanoguyn/md-csv-tsv-viewer--vscode"
     },
     "categories": [
         "Other"
@@ -26,6 +30,14 @@
                 "*.mkd": "mdviewer.viewer",
                 "*.csv": "mdviewer.viewer",
                 "*.tsv": "mdviewer.viewer"
+            },
+            "workbench.diffEditorAssociations": {
+                "*.md": "default",
+                "*.markdown": "default",
+                "*.mdown": "default",
+                "*.mkd": "default",
+                "*.csv": "default",
+                "*.tsv": "default"
             }
         },
         "commands": [
@@ -96,7 +108,10 @@
         "lint": "node --check extension.js && node --check media/vscodeViewer.js && node --check media/markdown.js && node --check media/markdownEnhancer.js && node --check media/tabular.js",
         "package": "rm -f mdviewer-vscode-*.vsix && vsce package --allow-missing-repository",
         "publish": "vsce publish --allow-missing-repository",
-        "local": "NODE_NO_WARNINGS=1 devin-desktop --install-extension mdviewer-vscode-${npm_package_version}.vsix"
+        "local": "NODE_NO_WARNINGS=1 devin-desktop --install-extension mdviewer-vscode-${npm_package_version}.vsix",
+        "code": "NODE_NO_WARNINGS=1 code --install-extension mdviewer-vscode-${npm_package_version}.vsix",
+        "agy": "NODE_NO_WARNINGS=1 agy-ide --install-extension mdviewer-vscode-${npm_package_version}.vsix",
+        "all": "npm run lint && npm run package && npm run local && npm run code && npm run agy"
     },
     "devDependencies": {
         "@types/vscode": "^1.88.0",

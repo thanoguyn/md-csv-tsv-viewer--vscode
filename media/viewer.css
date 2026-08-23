@@ -639,8 +639,15 @@ body.has-markdown-toc.is-toc-visible .markdown-toc {
   display: block;
 }
 
-body:has(.workspace.is-md-full-width:not(.is-data-mode)) .markdown-toc {
-  display: none !important;
+@media (min-width: 1352px) {
+  body.has-markdown-toc.is-toc-visible .workspace.is-md-full-width:not(.is-data-mode):not(.is-source-mode) {
+    width: calc(100% - var(--toc-width) - var(--toc-gap) - var(--toc-gap));
+  }
+
+  body:has(.workspace.is-md-full-width:not(.is-data-mode)) .markdown-toc {
+    right: var(--toc-gap);
+    left: auto;
+  }
 }
 
 @media (min-width: 1352px) and (max-width: 1631px) {
@@ -660,6 +667,10 @@ body:has(.workspace.is-md-full-width:not(.is-data-mode)) .markdown-toc {
 }
 
 @media (max-width: 1351px) {
+  #toggleToc {
+    display: none !important;
+  }
+
   .markdown-toc {
     display: none !important;
   }
@@ -807,6 +818,12 @@ body:has(.workspace.is-md-full-width:not(.is-data-mode)) .markdown-toc {
   width: 30px;
   min-height: 28px;
   padding: 0;
+}
+
+.wysiwyg-toolbar .wysiwyg-block-menu-button {
+  width: auto;
+  min-width: 44px;
+  padding: 0 8px;
 }
 
 .wysiwyg-editor {
@@ -1662,6 +1679,11 @@ body.is-resizing-column .column-resize-handle::after {
   background: var(--surface);
   box-shadow: var(--shadow);
   padding: 4px;
+}
+
+.wysiwyg-block-menu {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
 }
 
 .grid-context-menu button,

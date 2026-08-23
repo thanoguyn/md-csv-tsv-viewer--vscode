@@ -69,7 +69,7 @@
     selection.addRange(range);
 
     button.classList.add("is-selected");
-    showToast("Selected section");
+    window.__mdViewerShowSelectionStats?.(selection.toString(), { prefix: "Selected section" });
 
     window.setTimeout(() => {
       button.classList.remove("is-selected");

@@ -67,7 +67,19 @@ class MdViewerEditorProvider {
     webviewPanel.webview.html = this.htmlForWebview(webviewPanel.webview, document);
 
     const disposables = [];
+    let applyingWebviewEditCount = 0;
     let pendingDiskRefresh = null;
+    const applyWebviewEdit = async (text, save = false) => {
+      const nextText = String(text ?? "");
+      applyingWebviewEditCount += 1;
+      try {
+        const applied = await updateDocument(document, nextText);
+        if (applied && save) await document.save();
+        return applied;
+      } finally {
+        applyingWebviewEditCount = Math.max(0, applyingWebviewEditCount - 1);
+      }
+    };
     const scheduleDiskRefresh = () => {
       if (pendingDiskRefresh) clearTimeout(pendingDiskRefresh);
       pendingDiskRefresh = setTimeout(async () => {
@@ -78,6 +90,9 @@ class MdViewerEditorProvider {
 
     disposables.push(vscode.workspace.onDidChangeTextDocument((event) => {
       if (event.document.uri.toString() !== document.uri.toString()) return;
+      // Replacing the WYSIWYG HTML with its own edit echo resets the browser
+      // selection. Other editor instances still receive this document change.
+      if (applyingWebviewEditCount > 0) return;
       postDocument(webviewPanel.webview, event.document);
     }));
 
@@ -106,10 +121,9 @@ class MdViewerEditorProvider {
       } else if (message?.type === "exportPdf") {
         await exportPdf(document, message);
       } else if (message?.type === "updateDocument") {
-        await updateDocument(document, message.text);
+        await applyWebviewEdit(message.text);
       } else if (message?.type === "saveDocument") {
-        const applied = await updateDocument(document, message.text);
-        if (applied) await document.save();
+        await applyWebviewEdit(message.text, true);
       } else if (message?.type === "info") {
         vscode.window.showInformationMessage(String(message.message || ""));
       } else if (message?.type === "error") {
@@ -151,7 +165,7 @@ class MdViewerEditorProvider {
         </div>
         <div class="actions">
           <div class="mode-switch" role="radiogroup" aria-label="View mode">
-            <button id="modeViewer" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="true" data-tooltip="Viewer" data-shortcut="1">${toolbarIcon("eye")}</button>
+            <button id="modeViewer" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="true" data-tooltip="Viewer" data-shortcut="1 / ⌘/Ctrl+E in Edit">${toolbarIcon("eye")}</button>
             <button id="modeRaw" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="false" data-tooltip="Open in VS Code text editor" data-shortcut="2 / E">${toolbarIcon("code")}</button>
             <button id="modeWysiwyg" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="false" data-tooltip="WYSIWYG editor" data-shortcut="3">${toolbarIcon("edit")}</button>
           </div>
@@ -174,7 +188,7 @@ class MdViewerEditorProvider {
           <div class="wysiwyg-toolbar" role="toolbar" aria-label="Rich text formatting">
             <button type="button" data-format="bold" data-tooltip="Bold" data-shortcut="⌘/Ctrl+B"><strong>B</strong></button>
             <button type="button" data-format="italic" data-tooltip="Italic" data-shortcut="⌘/Ctrl+I"><em>I</em></button>
-            <button type="button" data-block="h2" data-tooltip="Heading" data-shortcut="—">H2</button>
+            <button id="wysiwygBlockMenuButton" class="wysiwyg-block-menu-button" type="button" data-block-menu="true" data-tooltip="Block type" data-shortcut="—">P⌄</button>
             <button type="button" data-format="insertUnorderedList" data-tooltip="Bullet list" data-shortcut="—">${toolbarIcon("bullets")}</button>
             <button type="button" data-format="insertOrderedList" data-tooltip="Numbered list" data-shortcut="—">${toolbarIcon("numbers")}</button>
             <button type="button" data-format="createLink" data-tooltip="Link" data-shortcut="⌘/Ctrl+K">${toolbarIcon("link")}</button>

@@ -6,6 +6,7 @@
   const dataGrid = document.getElementById("dataGrid");
   const wysiwygView = document.getElementById("wysiwygView");
   const wysiwygEditor = document.getElementById("wysiwygEditor");
+  const wysiwygBlockMenuButton = document.getElementById("wysiwygBlockMenuButton");
   const documentMeta = document.getElementById("documentMeta");
   const dropZone = document.getElementById("dropZone");
   const toggleTheme = document.getElementById("toggleTheme");
@@ -20,6 +21,7 @@
   const downloadDocument = document.getElementById("downloadDocument");
   const downloadPdf = document.getElementById("downloadPdf");
   const showHelp = document.getElementById("showHelp");
+  const tocLayoutMedia = window.matchMedia("(min-width: 1352px)");
   const fullWidthStorageKey = "md-viewer-full-width";
   const modeStorageKey = "md-viewer-mode";
   const tocStorageKey = "md-viewer-toc-visible";
@@ -41,6 +43,10 @@
   let renderingWysiwyg = false;
   let markdownAllSelected = false;
   let selectionContextMenu = null;
+  let selectionPointerActive = false;
+  let selectionToastTimer = null;
+  let lastSelectionToastText = "";
+  let lastSelectionToastAt = 0;
   let lastFocusRequestAt = 0;
   const findState = {
     bar: null,
@@ -63,6 +69,8 @@
   setPressed(togglePrintPdf, localStorage.getItem(printPdfStorageKey) !== "false");
   dropZone.classList.toggle("is-github-style", isPressed(toggleGithubStyle));
   document.body.classList.toggle("is-toolbar-hidden", localStorage.getItem(toolbarHiddenStorageKey) === "true");
+  syncTocAvailability();
+  tocLayoutMedia.addEventListener("change", syncTocAvailability);
   document.querySelectorAll("[data-tooltip]").forEach((element) => {
     if (!element.getAttribute("aria-label")) {
       const shortcut = element.dataset.shortcut && element.dataset.shortcut !== "—" ? ` (${element.dataset.shortcut})` : "";
@@ -80,6 +88,7 @@
   };
   window.__mdViewerDocumentEdit = (text) => flushDocumentEdit(text);
   window.__mdViewerCanEditDocument = () => !currentDocument.readonly;
+  window.__mdViewerShowSelectionStats = showSelectionStatsToast;
   window.__mdViewerMarkdownTableEdit = (start, end, tableMarkdown) => {
     const source = currentDocument.text;
     const eol = source.includes("\r\n") ? "\r\n" : "\n";
@@ -91,7 +100,9 @@
   };
   window.__mdViewerRefreshDocument = () => renderCurrentDocument();
   window.addEventListener("blur", () => {
-    if (editTimer) flushDocumentEdit();
+    selectionPointerActive = false;
+    window.clearTimeout(selectionToastTimer);
+    if (editTimer) flushWysiwygDocumentEdit();
   });
 
   toggleTheme.addEventListener("click", () => {
@@ -124,9 +135,12 @@
   document.addEventListener("copy", handleCopySelection);
   document.addEventListener("selectionchange", syncMarkdownSelectionState);
   document.addEventListener("contextmenu", handleSelectionContextMenu);
+  document.addEventListener("click", handleViewerTripleClick);
   document.addEventListener("click", hideSelectionContextMenu);
   document.addEventListener("scroll", hideSelectionContextMenu, true);
   document.addEventListener("pointerdown", handleViewerPointerDown, true);
+  document.addEventListener("pointerup", handleViewerPointerUp, true);
+  document.addEventListener("pointercancel", handleViewerPointerCancel, true);
   initializeFindBar();
 
   modeViewer.addEventListener("click", () => setMode("viewer"));
@@ -141,7 +155,7 @@
   });
 
   toggleToc.addEventListener("click", () => {
-    if (toggleToc.disabled) return;
+    if (toggleToc.disabled || toggleToc.hidden) return;
     const enabled = !isPressed(toggleToc);
     setPressed(toggleToc, enabled);
     localStorage.setItem(tocStorageKey, String(enabled));
@@ -153,7 +167,7 @@
   wysiwygEditor.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
-      flushDocumentEdit(htmlFragmentToMarkdown(wysiwygEditor), true);
+      flushWysiwygDocumentEdit(true);
     }
   });
   document.querySelector(".wysiwyg-toolbar")?.addEventListener("mousedown", handleWysiwygToolbar);
@@ -219,7 +233,13 @@
       renderingWysiwyg = true;
       wysiwygEditor.innerHTML = window.MDViewerMarkdown.render(text);
       sanitizeWysiwygSurface(wysiwygEditor);
+      if (!wysiwygEditor.firstChild) {
+        const paragraph = document.createElement("p");
+        paragraph.appendChild(document.createElement("br"));
+        wysiwygEditor.appendChild(paragraph);
+      }
       renderingWysiwyg = false;
+      updateWysiwygBlockMenuButton();
     } else {
       wysiwygView.hidden = true;
       const hasOpenMarkdownGrid = window.MDViewerTabular.hasOpenMarkdownTableGrid?.();
@@ -250,7 +270,7 @@
 
   function setMode(mode) {
     if (mode === "raw") {
-      if (editTimer) flushDocumentEdit();
+      if (editTimer) flushWysiwygDocumentEdit();
       currentMode = "viewer";
       localStorage.setItem(modeStorageKey, "viewer");
       vscode.postMessage({ type: "openEdit" });
@@ -260,7 +280,7 @@
       showToast("WYSIWYG is available for Markdown", { tone: "warning" });
       return;
     }
-    if (editTimer) flushDocumentEdit();
+    if (editTimer) flushWysiwygDocumentEdit();
     currentMode = mode;
     localStorage.setItem(modeStorageKey, mode);
     renderCurrentDocument();
@@ -277,6 +297,10 @@
     setPressed(toggleToc, isPressed(toggleToc));
   }
 
+  function syncTocAvailability() {
+    toggleToc.hidden = !tocLayoutMedia.matches;
+  }
+
   function isPressed(button) {
     return button.getAttribute("aria-pressed") === "true";
   }
@@ -285,19 +309,25 @@
     button.setAttribute("aria-pressed", String(Boolean(pressed)));
   }
 
-  function queueDocumentEdit(text) {
+  function queueWysiwygDocumentEdit() {
     if (currentDocument.readonly) return;
-    currentDocument.text = String(text ?? "");
     window.clearTimeout(editTimer);
+    // Serializing a large rendered document on every keystroke makes IME and
+    // caret movement stutter. Flush immediately at lifecycle boundaries below.
     editTimer = window.setTimeout(() => {
-      editTimer = null;
-      vscode.postMessage({ type: "updateDocument", text: currentDocument.text });
-    }, 180);
+      flushWysiwygDocumentEdit();
+    }, 300);
   }
 
-  function handleWysiwygInput() {
+  function handleWysiwygInput(event) {
     if (renderingWysiwyg) return;
-    queueDocumentEdit(htmlFragmentToMarkdown(wysiwygEditor));
+    applyWysiwygInputRule(event);
+    updateWysiwygBlockMenuButton();
+    queueWysiwygDocumentEdit();
+  }
+
+  function flushWysiwygDocumentEdit(save = false) {
+    flushDocumentEdit(htmlFragmentToMarkdown(wysiwygEditor), save);
   }
 
   function flushDocumentEdit(text = currentDocument.text, save = false) {
@@ -311,9 +341,15 @@
   function handleWysiwygToolbar(event) {
     const button = event.target.closest("button");
     if (!button || currentDocument.readonly) return;
+    const activeBlock = button.dataset.blockMenu ? currentWysiwygBlock() : null;
     event.preventDefault();
     wysiwygEditor.focus();
-    if (button.dataset.block) {
+    if (button.dataset.blockMenu) {
+      const block = activeBlock || ensureWysiwygBlock();
+      const rect = button.getBoundingClientRect();
+      showWysiwygBlockMenu(rect.left, rect.bottom + 4, block);
+      return;
+    } else if (button.dataset.block) {
       document.execCommand("formatBlock", false, button.dataset.block);
     } else if (button.dataset.format === "createLink") {
       const url = window.prompt("Link URL");
@@ -326,6 +362,176 @@
       document.execCommand(button.dataset.format, false);
     }
     handleWysiwygInput();
+  }
+
+  function applyWysiwygInputRule(event) {
+    if (event?.isComposing || event?.inputType !== "insertText" || event.data !== " ") return false;
+
+    const selection = window.getSelection();
+    if (!selection || !selection.isCollapsed || selection.rangeCount !== 1) return false;
+
+    const block = currentWysiwygBlock();
+    if (!block || !/^(p|div)$/i.test(block.tagName)) return false;
+
+    const marker = block.textContent || "";
+    const heading = marker.match(/^(#{1,6})\s$/);
+    if (heading) return convertWysiwygBlock(block, `h${heading[1].length}`, { clear: true });
+    if (/^[-*+]\s$/.test(marker)) return convertWysiwygBlock(block, "ul", { clear: true });
+    if (/^\d+[.)]\s$/.test(marker)) return convertWysiwygBlock(block, "ol", { clear: true });
+    if (/^>\s$/.test(marker)) return convertWysiwygBlock(block, "blockquote", { clear: true });
+    if (marker === "``` ") return convertWysiwygBlock(block, "pre", { clear: true });
+    return false;
+  }
+
+  function currentWysiwygBlock() {
+    return wysiwygBlockFromNode(window.getSelection()?.anchorNode);
+  }
+
+  function wysiwygBlockFromNode(node) {
+    let block = nodeElement(node);
+    if (!block || block === wysiwygEditor || !wysiwygEditor.contains(block)) return null;
+
+    while (block.parentElement && block.parentElement !== wysiwygEditor) {
+      block = block.parentElement;
+    }
+    return block.parentElement === wysiwygEditor ? block : null;
+  }
+
+  function ensureWysiwygBlock() {
+    let block = wysiwygEditor.lastElementChild;
+    if (block) return block;
+
+    block = document.createElement("p");
+    block.appendChild(document.createElement("br"));
+    wysiwygEditor.appendChild(block);
+    placeCaretAtEnd(block);
+    return block;
+  }
+
+  function showWysiwygBlockMenu(clientX, clientY, block) {
+    if (!block || currentDocument.readonly) return;
+    hideSelectionContextMenu();
+
+    const menu = document.createElement("div");
+    menu.className = "selection-context-menu wysiwyg-block-menu";
+    menu.setAttribute("role", "menu");
+
+    const title = document.createElement("div");
+    title.className = "selection-count-info";
+    title.textContent = `Block: ${wysiwygBlockLabel(block)}`;
+    menu.appendChild(title);
+
+    [
+      ["Paragraph", "p"],
+      ["Heading 1", "h1"],
+      ["Heading 2", "h2"],
+      ["Heading 3", "h3"],
+      ["Heading 4", "h4"],
+      ["Heading 5", "h5"],
+      ["Heading 6", "h6"],
+      ["Bullet list", "ul"],
+      ["Numbered list", "ol"],
+      ["Quote", "blockquote"],
+      ["Code block", "pre"]
+    ].forEach(([label, type]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("role", "menuitem");
+      button.textContent = label;
+      button.addEventListener("click", () => {
+        convertWysiwygBlock(block, type);
+        hideSelectionContextMenu();
+        handleWysiwygInput();
+      });
+      menu.appendChild(button);
+    });
+
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    const left = Math.min(clientX, window.innerWidth - rect.width - 8);
+    const top = Math.min(clientY, window.innerHeight - rect.height - 8);
+    menu.style.left = `${Math.max(8, left)}px`;
+    menu.style.top = `${Math.max(8, top)}px`;
+    selectionContextMenu = menu;
+  }
+
+  function convertWysiwygBlock(block, type, options = {}) {
+    if (!block?.parentNode || !wysiwygEditor.contains(block)) return false;
+
+    const normalizedType = String(type || "p").toLowerCase();
+    if (!options.clear && block.tagName.toLowerCase() === normalizedType) {
+      placeCaretAtEnd(block.querySelector("code, li, p") || block);
+      updateWysiwygBlockMenuButton(block);
+      return true;
+    }
+
+    const sourceIsInlineBlock = /^(p|div|h[1-6])$/i.test(block.tagName);
+    const sourceText = options.clear ? "" : wysiwygBlockText(block);
+    let replacement;
+    let contentTarget;
+
+    if (normalizedType === "ul" || normalizedType === "ol") {
+      replacement = document.createElement(normalizedType);
+      contentTarget = document.createElement("li");
+      replacement.appendChild(contentTarget);
+    } else if (normalizedType === "pre") {
+      replacement = document.createElement("pre");
+      contentTarget = document.createElement("code");
+      replacement.appendChild(contentTarget);
+    } else if (normalizedType === "blockquote") {
+      replacement = document.createElement("blockquote");
+      contentTarget = document.createElement("p");
+      replacement.appendChild(contentTarget);
+    } else {
+      replacement = document.createElement(/^h[1-6]$/.test(normalizedType) ? normalizedType : "p");
+      contentTarget = replacement;
+    }
+
+    if (!options.clear && sourceIsInlineBlock && normalizedType !== "pre") {
+      while (block.firstChild) contentTarget.appendChild(block.firstChild);
+    } else if (sourceText) {
+      contentTarget.textContent = sourceText;
+    }
+    if (!contentTarget.hasChildNodes()) contentTarget.appendChild(document.createElement("br"));
+
+    block.replaceWith(replacement);
+    placeCaretAtEnd(contentTarget);
+    updateWysiwygBlockMenuButton(replacement);
+    return true;
+  }
+
+  function wysiwygBlockText(block) {
+    if (/^(ul|ol)$/i.test(block.tagName)) {
+      return Array.from(block.children).map((item) => item.textContent || "").join("\n");
+    }
+    return block.textContent || "";
+  }
+
+  function wysiwygBlockLabel(block) {
+    const tag = block?.tagName?.toLowerCase() || "p";
+    if (/^h[1-6]$/.test(tag)) return tag.toUpperCase();
+    if (tag === "pre") return "Code";
+    if (tag === "ul") return "Bullet list";
+    if (tag === "ol") return "Numbered list";
+    if (tag === "blockquote") return "Quote";
+    return "Paragraph";
+  }
+
+  function updateWysiwygBlockMenuButton(block = currentWysiwygBlock()) {
+    if (!wysiwygBlockMenuButton) return;
+    const label = wysiwygBlockLabel(block);
+    wysiwygBlockMenuButton.textContent = `${/^H[1-6]$/.test(label) ? label : label === "Code" ? "Code" : "P"}⌄`;
+    wysiwygBlockMenuButton.setAttribute("aria-label", `Block type: ${label}`);
+  }
+
+  function placeCaretAtEnd(target) {
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    wysiwygEditor.focus();
   }
 
   function sanitizeWysiwygSurface(root) {
@@ -349,6 +555,12 @@
     if (commandOrControl && key === "f" && currentMode === "viewer") {
       event.preventDefault();
       openFindBar();
+      return;
+    }
+
+    if (commandOrControl && key === "e" && currentMode === "wysiwyg") {
+      event.preventDefault();
+      setMode("viewer");
       return;
     }
 
@@ -457,8 +669,25 @@
 
   function handleViewerPointerDown(event) {
     if (!event.target?.closest?.("#dropZone")) return;
+    if (event.target?.closest?.(".wysiwyg-toolbar")) return;
+    const selectableSurface = event.target?.closest?.("#preview, #wysiwygEditor");
+    if (event.button === 0 && selectableSurface) {
+      selectionPointerActive = true;
+      window.clearTimeout(selectionToastTimer);
+    }
     if (isTextInput(event.target)) return;
     focusViewerSurface();
+  }
+
+  function handleViewerPointerUp() {
+    if (!selectionPointerActive) return;
+    selectionPointerActive = false;
+    scheduleSelectionStatsToast(0);
+  }
+
+  function handleViewerPointerCancel() {
+    selectionPointerActive = false;
+    window.clearTimeout(selectionToastTimer);
   }
 
   function focusViewerSurface() {
@@ -752,10 +981,40 @@
     if (markdownAllSelected && !isNodeContentsSelected(preview)) {
       markdownAllSelected = false;
     }
+
+    updateWysiwygBlockMenuButton();
+    scheduleSelectionStatsToast();
+  }
+
+  function handleViewerTripleClick(event) {
+    if (event.detail !== 3 || event.button !== 0) return;
+    if (!event.target?.closest?.("#preview, #wysiwygEditor")) return;
+
+    selectionPointerActive = false;
+    scheduleSelectionStatsToast(0);
+  }
+
+  function scheduleSelectionStatsToast(delay = 250) {
+    window.clearTimeout(selectionToastTimer);
+    if (selectionPointerActive) return;
+
+    selectionToastTimer = window.setTimeout(() => {
+      const selection = currentViewerSelection();
+      if (selection) showSelectionStatsToast(selection.text);
+    }, delay);
   }
 
   function handleSelectionContextMenu(event) {
     if (event.target?.closest?.(".selection-context-menu, .grid-context-menu")) return;
+
+    if (!wysiwygView.hidden && event.target?.closest?.("#wysiwygEditor") && !currentDocument.readonly) {
+      const block = wysiwygBlockFromNode(event.target) || currentWysiwygBlock();
+      if (block) {
+        event.preventDefault();
+        showWysiwygBlockMenu(event.clientX, event.clientY, block);
+      }
+      return;
+    }
 
     const selection = currentViewerSelection();
     if (!selection) {
@@ -783,21 +1042,21 @@
 
     const slugButton = selectionMenuButton("Copy slug", async () => {
       await copyText(slugifySelection(selection.text));
-      showToast("Copied slug");
+      showSelectionCopyToast("Copied slug", selection.text);
     });
     const textButton = selectionMenuButton("Copy text", async () => {
       await copyText(selection.text);
-      showToast("Copied text");
+      showSelectionCopyToast("Copied text", selection.text);
     });
     const markdownButton = selectionMenuButton("Copy Markdown", async () => {
       const markdown = selectionMarkdown(selection);
       if (!markdown) throw new Error("No Markdown selection");
       await copyText(markdown);
-      showToast("Copied Markdown");
+      showSelectionCopyToast("Copied Markdown", selection.text);
     });
     const richTextButton = selectionMenuButton("Copy rich text", async () => {
       const copiedRichText = await copyRichSelection(selection);
-      showToast(copiedRichText ? "Copied rich text" : "Copied text");
+      showSelectionCopyToast(copiedRichText ? "Copied rich text" : "Copied text", selection.text);
     });
     const statsButton = selectionMenuButton(selectionStatsDisabled() ? "Enable count info" : "Disable count info", async () => {
       const disabled = !selectionStatsDisabled();
@@ -834,7 +1093,7 @@
   }
 
   function hideSelectionContextMenu(event) {
-    if (event?.target?.closest?.(".selection-context-menu")) return;
+    if (event?.target?.closest?.(".selection-context-menu, [data-block-menu]")) return;
     selectionContextMenu?.remove();
     selectionContextMenu = null;
   }
@@ -848,6 +1107,33 @@
     const characters = Array.from(normalized).length;
     const words = normalized ? normalized.split(/\s+/).filter(Boolean).length : 0;
     return { characters, words };
+  }
+
+  function showSelectionStatsToast(text, options = {}) {
+    if (selectionStatsDisabled()) return false;
+
+    const normalized = String(text || "").trim();
+    const stats = selectionStats(normalized);
+    if (stats.words <= 1) return false;
+
+    const now = Date.now();
+    if (normalized === lastSelectionToastText && now - lastSelectionToastAt < 1000) return false;
+
+    lastSelectionToastText = normalized;
+    lastSelectionToastAt = now;
+    const prefix = options.prefix ? `${options.prefix} · ` : "";
+    showToast(`${prefix}${stats.words} words · ${stats.characters} chars`);
+    return true;
+  }
+
+  function showSelectionCopyToast(message, text) {
+    if (selectionStatsDisabled()) {
+      showToast(message);
+      return;
+    }
+
+    const { words } = selectionStats(text);
+    showToast(`${message} · ${words} ${words === 1 ? "word" : "words"}`);
   }
 
   function currentViewerSelection() {
@@ -877,6 +1163,7 @@
     if (!start || !end) return null;
 
     if (!preview.hidden && preview.contains(start) && preview.contains(end)) return preview;
+    if (!wysiwygView.hidden && wysiwygEditor.contains(start) && wysiwygEditor.contains(end)) return wysiwygEditor;
     return null;
   }
 
@@ -1456,7 +1743,7 @@
         </header>
         <div class="help-body">
           <h3>Open and edit</h3>
-          <p>Use Viewer for preview, Raw Edit to open VS Code's default text editor, and WYSIWYG to edit rendered Markdown directly. WYSIWYG edits participate in VS Code undo/redo and dirty state; Command/Ctrl+S saves.</p>
+          <p>Use Viewer for preview, Raw Edit to open VS Code's default text editor, and WYSIWYG to edit rendered Markdown directly. In WYSIWYG, type # through ######, -, 1., &gt;, or &#96;&#96;&#96; followed by a space at the start of a block to format it, or use the block menu/right-click. WYSIWYG edits participate in VS Code undo/redo and dirty state; Command/Ctrl+S saves.</p>
           <h3>Git changes</h3>
           <p>Opening a changed file from Source Control shows both custom-editor sides. The historical Git side is read-only and the working-tree side remains editable.</p>
           <h3>Markdown</h3>
@@ -1464,7 +1751,7 @@
           <h3>Tables</h3>
           <p>CSV and TSV files open as an interactive grid. Double-click a cell to edit it, paste an Excel range onto the selected cell, Command/Ctrl-click non-adjacent columns to copy them as one Excel-ready block, or right-click to insert/delete rows and columns.</p>
           <h3>Shortcuts</h3>
-          <p>1 selects Viewer. 2, E, or S opens Raw Edit in VS Code. 3 selects WYSIWYG. Command/Ctrl+F opens find in Viewer. Control+B hides or shows the toolbar. F toggles full width. T toggles TOC. G toggles GitHub style. M toggles theme. Shift+P switches between print-friendly PDF and the current appearance; P exports PDF. ? opens help. [space] opens a hovered Markdown table as Grid. W toggles wrap. V toggles table selection. U toggles Auto/VN/US number parsing. H toggles first row as header. D saves a copy. C copies rendered content. Shift+C copies source. Command/Ctrl+A selects viewer/table content.</p>
+          <p>1 selects Viewer. Command/Ctrl+E returns from WYSIWYG Edit to Viewer. 2, E, or S opens Raw Edit in VS Code. 3 selects WYSIWYG. Command/Ctrl+F opens find in Viewer. Control+B hides or shows the toolbar. F toggles full width. T toggles TOC. G toggles GitHub style. M toggles theme. Shift+P switches between print-friendly PDF and the current appearance; P exports PDF. ? opens help. [space] opens a hovered Markdown table as Grid. W toggles wrap. V toggles table selection. U toggles Auto/VN/US number parsing. H toggles first row as header. D saves a copy. C copies rendered content. Shift+C copies source. Command/Ctrl+A selects viewer/table content.</p>
         </div>
       </div>
     `;

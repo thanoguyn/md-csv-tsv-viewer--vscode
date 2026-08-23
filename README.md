@@ -33,7 +33,7 @@ After installation, opening any supported file or using Quick Open will launch i
 - Icon-based toolbar; hover or focus to view feature titles and keyboard shortcuts.
 - Toggle light/dark theme using the theme button or the `M` key.
 - Toggle GitHub-style Markdown theme using the style button or the `G` key.
-- View changes from Source Control using a side-by-side diff editor; Git history pane is read-only.
+- Open changes from Source Control in VS Code's built-in text diff editor while regular files continue to use MD Viewer.
 - Browser-like search using `Cmd+F` or `Ctrl+F`.
 - Copy currently viewed content with `C`.
 - Copy source content with `Shift+C`.
@@ -41,7 +41,7 @@ After installation, opening any supported file or using Quick Open will launch i
 - Save a copy of source file using the `Save copy` button or the `D` key.
 - Export to PDF using the `PDF` button or the `P` key.
 - Toggle toolbar visibility with `Ctrl+B`.
-- Toast notifications for copy, save, and operation success/failure status.
+- Toast notifications for copy, save, and operation success/failure status
 
 ## Markdown Viewer
 
@@ -54,7 +54,7 @@ After installation, opening any supported file or using Quick Open will launch i
 - Toggle TOC using the `TOC` button or the `T` key.
 - TOC automatically updates based on scroll position and auto-expands child headings (up to 3 levels).
 - Raw Edit opens VS Code's default text editor; no internal text editor panel.
-- WYSIWYG editing support with formatting for bold, italic, headings, lists, and links.
+- WYSIWYG editing with block menus and Markdown-style input rules for headings, lists, quotes, and code blocks.
 - Hover over headings to display copy and select action icons.
 - Click the heading copy icon to copy the entire Markdown section.
 - `Shift+Click` the heading copy icon to append to previous clipboard content.
@@ -106,6 +106,7 @@ After installation, opening any supported file or using Quick Open will launch i
 | Shortcut | Description |
 | --- | --- |
 | `1` / `3` | Toggle Viewer / WYSIWYG editor |
+| `Cmd+E` / `Ctrl+E` | Return from WYSIWYG Edit to Viewer |
 | `2` / `E` / `S` | Open Raw Edit using default VS Code editor |
 | `Cmd+Alt+V` | macOS: Reopen viewer from text editor |
 | `Ctrl+Alt+V` | Windows/Linux: Reopen viewer from text editor |
@@ -157,7 +158,7 @@ Package VSIX:
 npx --yes @vscode/vsce package
 ```
 
-Debug extension:
+## Debug extension:
 
 1. Open this workspace in VS Code.
 2. Press `F5`.
