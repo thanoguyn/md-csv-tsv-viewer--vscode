@@ -1,138 +1,157 @@
 # MD/CSV/TSV Viewer for VS Code
 
-Extension VS Code giúp mở file Markdown, CSV và TSV ở chế độ viewer mặc định. Khi cần chỉnh sửa, bạn có thể chuyển nhanh sang text editor của VS Code và quay lại viewer bằng nút hoặc phím tắt.
+A VS Code extension to view and edit Markdown, CSV, and TSV files using a Viewer/WYSIWYG custom editor and Raw Edit via VS Code's default text editor.
 
-## File Được Hỗ Trợ
+## Supported File Formats
 
 - Markdown: `.md`, `.markdown`, `.mdown`, `.mkd`
-- Bảng dữ liệu: `.csv`, `.tsv`
+- Data Tables: `.csv`, `.tsv`
 
-Các định dạng trên được cấu hình mở bằng `MD Viewer` mặc định thông qua `workbench.editorAssociations`.
+The above file formats are configured by default to open with `MD Viewer` via `workbench.editorAssociations`.
 
-## Cài Đặt Từ VSIX
+## Installation from VSIX
 
-1. Mở VS Code.
-2. Chạy lệnh `Extensions: Install from VSIX...`.
-3. Chọn file `mdviewer-vscode-0.1.3.vsix`.
-4. Reload VS Code nếu được yêu cầu.
+1. Open VS Code.
+2. Run the command `Extensions: Install from VSIX...`.
+3. Select the `mdviewer-vscode-0.1.8.vsix` file.
+4. Reload VS Code if prompted.
 
-Sau khi cài đặt, click file được hỗ trợ hoặc mở bằng Quick Open đều sẽ vào viewer mặc định.
+After installation, opening any supported file or using Quick Open will launch it in the default viewer.
 
-## Chế Độ Viewer Và Edit
+## Three Modes
 
-- Trong viewer, nhấn `E` hoặc nút `Edit` để mở file bằng text editor của VS Code.
-- Trong text editor, nhấn `Cmd+Alt+V` trên macOS hoặc `Ctrl+Alt+V` trên Windows/Linux để quay lại viewer.
-- Có thể dùng nút `Open in MD Viewer` trên editor title để mở lại viewer.
+- `1` — Default Viewer.
+- `2`, `E`, or `S` — Raw Edit using VS Code's default text editor.
+- `3` — WYSIWYG editor for Markdown to edit rendered content directly.
+- All edits utilize VS Code's document model, maintaining dirty state, undo/redo history, and saving with `Cmd+S` / `Ctrl+S`.
+- You can always use the `Open as Text` command to switch back to VS Code's native text editor.
 
-## Tính Năng Chung
+## General Features
 
-- Viewer mặc định cho Markdown, CSV và TSV.
-- Chuyển full width bằng nút `Full width` hoặc phím `F`.
-- Chuyển theme sáng/tối bằng nút `Theme`.
-- Tìm kiếm giống trình duyệt bằng `Cmd+F` hoặc `Ctrl+F`.
-- Copy nội dung đang xem bằng `C`.
-- Copy source bằng `Shift+C`.
-- Chọn toàn bộ nội dung viewer hoặc bảng bằng `Cmd+A` hoặc `Ctrl+A`.
-- Lưu bản copy source bằng nút `Save copy` hoặc phím `D`.
-- Export PDF bằng nút `PDF` hoặc phím `P`.
-- Ẩn/hiện toolbar bằng `Ctrl+B`.
-- Toast thông báo khi copy, lưu hoặc thao tác thành công/thất bại.
+- Default viewer for Markdown, CSV, and TSV files.
+- Toggle full width mode using the `Full width` button or the `F` key.
+- Icon-based toolbar; hover or focus to view feature titles and keyboard shortcuts.
+- Toggle light/dark theme using the theme button or the `M` key.
+- Toggle GitHub-style Markdown theme using the style button or the `G` key.
+- View changes from Source Control using a side-by-side diff editor; Git history pane is read-only.
+- Browser-like search using `Cmd+F` or `Ctrl+F`.
+- Copy currently viewed content with `C`.
+- Copy source content with `Shift+C`.
+- Select all viewer content or table data with `Cmd+A` or `Ctrl+A`.
+- Save a copy of source file using the `Save copy` button or the `D` key.
+- Export to PDF using the `PDF` button or the `P` key.
+- Toggle toolbar visibility with `Ctrl+B`.
+- Toast notifications for copy, save, and operation success/failure status.
 
 ## Markdown Viewer
 
-- Render Markdown với heading, list, quote, link, image, table và code block.
-- Hỗ trợ Mermaid diagram.
-- Hỗ trợ table tương tác trong Markdown.
-- Hỗ trợ TOC cố định bên phải nội dung khi đủ không gian.
-- TOC có thể bật/tắt bằng nút `TOC` hoặc phím `T`.
-- TOC tự cập nhật theo vị trí scroll và tự mở heading con, tối đa 3 cấp.
-- Hỗ trợ source view bằng nút `Source` hoặc phím `S`.
-- Hover vào heading để hiện icon copy và icon select.
-- Click icon copy trên heading để copy toàn bộ nội dung Markdown thuộc section đó.
-- `Shift+Click` icon copy trên heading để append vào nội dung copy trước đó.
-- Click icon select trên heading để bôi đen toàn bộ nội dung con của heading.
-- Code block có nút copy, hỗ trợ `Shift+Click` để append.
-- Table trong Markdown có copy toàn bảng, copy body, export CSV/TSV và mở dạng grid.
+- Renders GFM/CommonMark using `marked`, including nested lists, task lists, Setext headings, reference links/images, autolinks, code fences (backticks or `~~~`), and inline HTML.
+- Rendered HTML is sanitized with `DOMPurify`; VS Code webview Content Security Policy (CSP) acts as an extra layer of protection.
+- Supports Mermaid diagrams.
+- Mermaid rendering is debounced and discards stale renders on rapid content updates; diagrams automatically match the viewer's active theme.
+- Interactive table support in Markdown.
+- Sticky Table of Contents (TOC) pinned to the right of the content when space allows.
+- Toggle TOC using the `TOC` button or the `T` key.
+- TOC automatically updates based on scroll position and auto-expands child headings (up to 3 levels).
+- Raw Edit opens VS Code's default text editor; no internal text editor panel.
+- WYSIWYG editing support with formatting for bold, italic, headings, lists, and links.
+- Hover over headings to display copy and select action icons.
+- Click the heading copy icon to copy the entire Markdown section.
+- `Shift+Click` the heading copy icon to append to previous clipboard content.
+- Click the heading select icon to highlight all child content under the heading.
+- Code blocks and Mermaid diagrams feature toolbar icons for word wrap and copy; hover shows titles and shortcuts, `Shift+Click` appends.
+- Markdown tables support copying full table, copying table body, exporting to CSV/TSV, and editing in grid mode.
+- Double-click a Markdown table cell or click `Grid` to edit; changes write back directly to the corresponding Markdown table in the source file.
 
 ## CSV/TSV Viewer
 
-- File CSV và TSV mở bằng grid tương tác.
-- Tự parse dữ liệu thành bảng.
-- Bật/tắt wrap bằng `W`.
-- Bật/tắt dòng đầu là header bằng `H`.
-- Chuyển định dạng parse số `Auto`, `VN`, `US` bằng `U`.
-- Sort theo cột.
-- Bật filter row và lọc từng cột.
-- Chọn ô, dòng, cột hoặc vùng dữ liệu.
-- `Shift` khi chọn dòng để mở rộng vùng chọn.
-- Copy selection, copy toàn bảng hoặc copy body.
-- `Shift+Click` khi copy để append vào nội dung copy trước đó.
-- Context menu trên grid có copy thường và copy số theo định dạng US.
-- Export bảng ra CSV hoặc TSV.
+- CSV and TSV files open in an interactive grid view.
+- Automatically parses file data into tables.
+- Toggle word wrap with `W`.
+- Toggle first row as header with `H`.
+- Switch number parsing formats (`Auto`, `VN`, `US`) with `U`.
+- Column sorting capabilities.
+- Filter row support for per-column filtering.
+- Select cells, rows, columns, or rectangular cell ranges.
+- Double-click a cell to edit; double-click a column header to rename.
+- Paste multi-row/multi-column data from Excel into selected cells, automatically expanding the grid if necessary.
+- Right-click cell or column header to insert/delete columns before or after.
+- Right-click cell or row number to insert/delete rows above or below.
+- `Cmd/Ctrl+Click` multiple non-adjacent columns and copy to paste into Excel as a contiguous block.
+- Hold `Shift` when selecting rows to expand selection.
+- Copy selection, full table, or table body.
+- `Shift+Click` copy actions to append to previous clipboard content.
+- Grid context menu offers standard copy and US-formatted number copy.
+- Export tables directly to CSV or TSV.
 
-## Tìm Kiếm
+## Search
 
-- `Cmd+F` trên macOS hoặc `Ctrl+F` trên Windows/Linux để mở thanh tìm kiếm.
-- Gõ từ khóa để highlight tất cả kết quả trong viewer hiện tại.
-- `Enter` chuyển tới kết quả tiếp theo.
-- `Shift+Enter` quay lại kết quả trước.
-- `Escape` đóng thanh tìm kiếm.
-- Tìm kiếm hoạt động với Markdown preview, Markdown source view và CSV/TSV grid.
+- `Cmd+F` on macOS or `Ctrl+F` on Windows/Linux opens the search bar.
+- Type keywords to highlight all matches in the active viewer.
+- Press `Enter` to jump to the next match.
+- Press `Shift+Enter` to jump to the previous match.
+- Press `Escape` to close the search bar.
+- Search works in Markdown preview and CSV/TSV grid; Raw/WYSIWYG modes use native editor/webview search capabilities.
 
 ## Export PDF
 
-- Nhấn nút `PDF` hoặc phím `P`.
-- PDF được tạo từ DOM preview hiện tại bằng `html2canvas` và `jsPDF`.
-- Markdown preview, Markdown source view và CSV/TSV grid đều được export theo layout đang xem.
-- Các control như toolbar, TOC, nút copy, filter row và highlight tìm kiếm sẽ không xuất hiện trong PDF.
+- Click the `PDF` button or press `P`.
+- `Print-friendly PDF` button or `Shift+P` toggles between A4 white-background print layout and current theme appearance.
+- PDF is generated from the current preview DOM using `html2canvas` and `jsPDF`.
+- Markdown Viewer/WYSIWYG and CSV/TSV grids are exported according to the current view layout.
+- UI elements like toolbars, TOC, copy buttons, filter rows, and search highlights are automatically excluded from the PDF output.
 
-## Phím Tắt
+## Keyboard Shortcuts
 
-| Phím | Chức năng |
+| Shortcut | Description |
 | --- | --- |
-| `E` | Mở file hiện tại bằng text editor |
-| `Cmd+Alt+V` | macOS: mở lại viewer từ text editor |
-| `Ctrl+Alt+V` | Windows/Linux: mở lại viewer từ text editor |
-| `Cmd+F` / `Ctrl+F` | Mở thanh tìm kiếm |
-| `Enter` trong find | Kết quả tìm kiếm tiếp theo |
-| `Shift+Enter` trong find | Kết quả tìm kiếm trước đó |
-| `Escape` | Đóng find/help/context menu khi đang mở |
-| `Cmd+A` / `Ctrl+A` | Chọn toàn bộ nội dung viewer hoặc grid |
-| `Ctrl+B` | Ẩn/hiện toolbar |
-| `F` | Bật/tắt full width |
-| `T` | Bật/tắt TOC trong Markdown preview |
-| `S` | Bật/tắt source view trong Markdown |
-| `W` | Bật/tắt wrap cho code, table hoặc grid |
-| `U` | Chuyển định dạng parse số `Auto`/`VN`/`US` |
-| `H` | Bật/tắt dòng đầu là header trong CSV/TSV |
-| `D` | Save copy source file |
+| `1` / `3` | Toggle Viewer / WYSIWYG editor |
+| `2` / `E` / `S` | Open Raw Edit using default VS Code editor |
+| `Cmd+Alt+V` | macOS: Reopen viewer from text editor |
+| `Ctrl+Alt+V` | Windows/Linux: Reopen viewer from text editor |
+| `Cmd+F` / `Ctrl+F` | Open search bar |
+| `Enter` (in search) | Next search match |
+| `Shift+Enter` (in search) | Previous search match |
+| `Escape` | Close search bar, help modal, or context menu |
+| `Cmd+A` / `Ctrl+A` | Select all content in viewer or grid |
+| `Ctrl+B` | Toggle toolbar visibility |
+| `F` | Toggle full width mode |
+| `T` | Toggle TOC in Markdown preview |
+| `M` | Toggle light/dark theme |
+| `G` | Toggle GitHub-style Markdown theme |
+| `?` | Open help modal |
+| `W` | Toggle line wrapping for code, tables, or grid |
+| `U` | Switch number parsing format (`Auto` / `VN` / `US`) |
+| `H` | Toggle first row as header in CSV/TSV |
+| `D` | Save copy of source file |
 | `P` | Export PDF |
-| `C` | Copy nội dung đang xem |
-| `Shift+C` | Copy source |
-| `Shift+Click` copy button | Append vào nội dung copy trước đó |
+| `Shift+P` | Toggle PDF print-friendly / current appearance mode |
+| `C` | Copy currently viewed content |
+| `Shift+C` | Copy source content |
+| `Shift+Click` copy | Append to previous clipboard content |
 
-## Lệnh VS Code
+## VS Code Commands
 
-| Command | Mô tả |
+| Command | Description |
 | --- | --- |
-| `MD Viewer: Open in MD Viewer` | Mở file hiện tại bằng viewer |
-| `MD Viewer: Open as Text` | Mở file hiện tại bằng text editor |
+| `MD Viewer: Open in MD Viewer` | Open current file using MD Viewer |
+| `MD Viewer: Open as Text` | Open current file using default text editor |
 
-## Phát Triển
+## Development
 
-Cài dependency:
+Install dependencies:
 
 ```sh
 npm install
 ```
 
-Chạy kiểm tra syntax:
+Run lint / syntax checks:
 
 ```sh
 npm run lint
 ```
 
-Build VSIX:
+Package VSIX:
 
 ```sh
 npx --yes @vscode/vsce package
@@ -140,10 +159,10 @@ npx --yes @vscode/vsce package
 
 Debug extension:
 
-1. Mở folder này trong VS Code.
-2. Nhấn `F5`.
-3. VS Code Extension Development Host sẽ mở ra để test extension.
+1. Open this workspace in VS Code.
+2. Press `F5`.
+3. A VS Code Extension Development Host window will launch to test the extension.
 
 ## License
 
-MIT. Xem file `LICENSE`.
+MIT. See file `LICENSE`.

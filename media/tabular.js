@@ -14,11 +14,13 @@
   let activeGrid = null;
   let activeMarkdownTable = null;
   let hoveredMarkdownTable = null;
+  let openGridModal = null;
   let gridContextMenu = null;
   let activeResize = null;
   let filterTimer = null;
   document.addEventListener("keydown", handleGridCopyShortcut);
   document.addEventListener("keydown", handleGridContextMenuKeyDown);
+  document.addEventListener("paste", handleGridPaste);
   document.addEventListener("click", hideGridContextMenu);
   document.addEventListener("scroll", hideGridContextMenu, true);
   document.addEventListener("mousemove", handleColumnResizeMove);
@@ -105,67 +107,48 @@
       const controls = document.createElement("div");
       controls.className = "table-controls";
 
-      const wrapLabel = document.createElement("label");
-      wrapLabel.className = "switch-control";
-      wrapLabel.title = "Toggle table text wrapping";
-
-      const wrapInput = document.createElement("input");
-      wrapInput.type = "checkbox";
-      wrapInput.className = "wrap-toggle-input";
-      wrapInput.checked = wrapEnabled;
-      wrapInput.addEventListener("change", () => {
-        setWrapEnabled(wrapInput.checked, document);
+      const wrapButton = document.createElement("button");
+      wrapButton.type = "button";
+      wrapButton.className = "wrap-toggle-input";
+      setTableIconButton(wrapButton, "wrap", "Wrap table text", "W");
+      wrapButton.setAttribute("aria-pressed", String(wrapEnabled));
+      wrapButton.addEventListener("click", () => {
+        setWrapEnabled(!getWrapState(), document);
       });
 
-      const wrapText = document.createElement("span");
-      wrapText.textContent = "Wrap";
-      wrapLabel.append(wrapInput, wrapText);
-
-      const selectLabel = document.createElement("label");
-      selectLabel.className = "switch-control";
-      selectLabel.title = "Toggle Markdown table selection for all tables";
-
-      const selectInput = document.createElement("input");
-      selectInput.type = "checkbox";
-      selectInput.className = "table-selection-toggle-input";
-
-      const selectText = document.createElement("span");
-      selectText.textContent = "Select";
-      selectLabel.append(selectInput, selectText);
+      const selectButton = document.createElement("button");
+      selectButton.type = "button";
+      selectButton.className = "table-selection-toggle-input";
+      setTableIconButton(selectButton, "selection", "Select table cells", "V");
 
       const copyButton = document.createElement("button");
       copyButton.type = "button";
       copyButton.className = "copy-table-button";
       setIconButton(copyButton, "All", "copy");
-      copyButton.title = "Copy table as TSV";
       copyButton.addEventListener("click", (event) => copyFromButton(copyButton, tableToDelimited(table), { append: event.shiftKey }));
 
       const copyBodyButton = document.createElement("button");
       copyBodyButton.type = "button";
       copyBodyButton.className = "copy-table-button";
       setIconButton(copyBodyButton, "Body", "copy");
-      copyBodyButton.title = "Copy table body without header";
       copyBodyButton.addEventListener("click", (event) => copyFromButton(copyBodyButton, tableToDelimited(table, { includeHeader: false }), { append: event.shiftKey }));
 
       const csvButton = document.createElement("button");
       csvButton.type = "button";
       csvButton.className = "copy-table-button";
       setIconButton(csvButton, "CSV", "download");
-      csvButton.title = "Download table as CSV";
       csvButton.addEventListener("click", () => downloadRows(tableToRows(table), "csv"));
 
       const tsvButton = document.createElement("button");
       tsvButton.type = "button";
       tsvButton.className = "copy-table-button";
       setIconButton(tsvButton, "TSV", "download");
-      tsvButton.title = "Download table as TSV";
       tsvButton.addEventListener("click", () => downloadRows(tableToRows(table), "tsv"));
 
       const gridButton = document.createElement("button");
       gridButton.type = "button";
       gridButton.className = "copy-table-button";
-      gridButton.textContent = "Grid";
-      gridButton.title = "Open table in fullscreen grid";
+      setTableIconButton(gridButton, "grid", "Open editable grid", "Space");
       gridButton.addEventListener("click", () => openTableGrid(table));
 
       const scroller = document.createElement("div");
@@ -174,6 +157,15 @@
       table.addEventListener("mousedown", handleMarkdownTableMouseDown);
       table.addEventListener("mouseover", handleMarkdownTableMouseOver);
       table.addEventListener("contextmenu", handleMarkdownTableContextMenu);
+      table.addEventListener("dblclick", (event) => {
+        const cell = event.target.closest("th, td");
+        if (!cell || !table.contains(cell)) return;
+        event.preventDefault();
+        openTableGrid(table, {
+          editColumn: Number(cell.dataset.mdColumn),
+          editRow: Number(cell.dataset.mdRow)
+        });
+      });
       table.addEventListener("mouseenter", () => {
         window.__mdViewerFocusSurface?.();
         hoveredMarkdownTable = table;
@@ -183,27 +175,30 @@
       });
       const selection = markdownTableSelection(table);
       selection.shell = shell;
-      selection.toggleInput = selectInput;
-      selectInput.addEventListener("change", () => {
-        setMarkdownTableSelectionEnabled(selectInput.checked, document, table);
+      selection.toggleInput = selectButton;
+      selectButton.addEventListener("click", () => {
+        setMarkdownTableSelectionEnabled(!getMarkdownTableSelectionState(), document, table);
       });
       setMarkdownTableSelectionMode(table, selectionModeEnabled);
 
       table.parentNode.insertBefore(shell, table);
       shell.append(toolbar, scroller);
       toolbar.append(label, controls);
-      controls.append(wrapLabel, selectLabel, gridButton, copyButton, copyBodyButton, csvButton, tsvButton);
+      controls.append(wrapButton, selectButton, gridButton, copyButton, copyBodyButton, csvButton, tsvButton);
       scroller.appendChild(table);
     });
   }
 
-  function renderDataGrid(container, input, kind) {
+  function renderDataGrid(container, input, kind, options = {}) {
     const delimiter = kind === "tsv" ? "\t" : ",";
     const rawRows = parseDelimited(input, delimiter);
-    renderDataGridRows(container, rawRows);
+    renderDataGridRows(container, rawRows, { editable: options.editable !== false, kind });
   }
 
-  function renderDataGridRows(container, rawRows) {
+  function renderDataGridRows(container, rawRows, options = {}) {
+    const previousScroller = container.querySelector(".grid-scroll");
+    const previousScrollTop = previousScroller?.scrollTop || 0;
+    const previousScrollLeft = previousScroller?.scrollLeft || 0;
     const sourceRows = normalizeRows(rawRows);
     const numberFormat = getNumberFormat();
     const headerEnabled = true;
@@ -212,11 +207,15 @@
       columnMeta: model.columnMeta,
       columns: model.columns,
       container,
+      editable: Boolean(options.editable),
       filterDrafts: {},
       filterMode: getFilterMode(),
       filterRowVisible: getFilterRowVisible(),
       filters: {},
       headerEnabled,
+      kind: options.kind || null,
+      markdownSourceEnd: options.markdownSourceEnd,
+      markdownSourceStart: options.markdownSourceStart,
       numberFormat,
       rows: model.rows,
       selection: { ranges: [], activeIndex: -1, dragging: false, anchor: null },
@@ -245,37 +244,28 @@
     const actions = document.createElement("div");
     actions.className = "grid-actions";
 
-    const wrapLabel = document.createElement("label");
-    wrapLabel.className = "switch-control";
-
-    const wrapInput = document.createElement("input");
-    wrapInput.type = "checkbox";
-    wrapInput.className = "wrap-toggle-input";
-    wrapInput.checked = getWrapState();
-    wrapInput.addEventListener("change", () => {
-      setWrapState(wrapInput.checked);
-      container.classList.toggle("is-wrapped", wrapInput.checked);
+    const wrapButton = document.createElement("button");
+    wrapButton.type = "button";
+    wrapButton.className = "wrap-toggle-input";
+    setTableIconButton(wrapButton, "wrap", "Wrap cell text", "W");
+    wrapButton.setAttribute("aria-pressed", String(getWrapState()));
+    wrapButton.addEventListener("click", () => {
+      const enabled = !getWrapState();
+      setWrapState(enabled);
+      wrapButton.setAttribute("aria-pressed", String(enabled));
+      container.classList.toggle("is-wrapped", enabled);
     });
 
-    const wrapText = document.createElement("span");
-    wrapText.textContent = "Wrap";
-    wrapLabel.append(wrapInput, wrapText);
-
-    const filterModeLabel = document.createElement("label");
-    filterModeLabel.className = "switch-control";
-    filterModeLabel.title = "Filter while typing";
-
-    const filterModeInput = document.createElement("input");
-    filterModeInput.type = "checkbox";
-    filterModeInput.checked = activeGrid.filterMode === "type";
-    filterModeInput.addEventListener("change", () => {
-      activeGrid.filterMode = filterModeInput.checked ? "type" : "change";
+    const filterModeButton = document.createElement("button");
+    filterModeButton.type = "button";
+    setTableIconButton(filterModeButton, "filter-live", "Filter while typing", "—");
+    filterModeButton.setAttribute("aria-pressed", String(activeGrid.filterMode === "type"));
+    filterModeButton.addEventListener("click", () => {
+      const enabled = activeGrid.filterMode !== "type";
+      activeGrid.filterMode = enabled ? "type" : "change";
       setFilterMode(activeGrid.filterMode);
+      filterModeButton.setAttribute("aria-pressed", String(enabled));
     });
-
-    const filterModeText = document.createElement("span");
-    filterModeText.textContent = "Filter on type";
-    filterModeLabel.append(filterModeInput, filterModeText);
 
     const numberFormatButton = document.createElement("button");
     numberFormatButton.type = "button";
@@ -289,20 +279,19 @@
     headerButton.type = "button";
     headerButton.className = "header-row-toggle";
     updateHeaderButton(headerButton);
+    headerButton.disabled = activeGrid.kind === "markdown-table";
     headerButton.addEventListener("click", () => {
       updateHeaderButton(headerButton, toggleHeaderRow(container));
     });
 
     const fitButton = document.createElement("button");
     fitButton.type = "button";
-    fitButton.textContent = "Fit";
-    fitButton.title = "Fit columns to visible content";
+    setTableIconButton(fitButton, "fit", "Fit columns to content", "—");
     fitButton.addEventListener("click", () => fitColumnsToContent(container));
 
     const copyButton = document.createElement("button");
     copyButton.type = "button";
     setIconButton(copyButton, "Selection", "copy");
-    copyButton.title = "Copy selected range";
     copyButton.addEventListener("click", (event) => {
       const text = hasSelection() ? selectedGridText(container) : visibleGridText(container);
       copyFromButton(copyButton, text, { append: event.shiftKey });
@@ -311,28 +300,24 @@
     const copyAllButton = document.createElement("button");
     copyAllButton.type = "button";
     setIconButton(copyAllButton, "All", "copy");
-    copyAllButton.title = "Copy whole table with header";
     copyAllButton.addEventListener("click", (event) => copyFromButton(copyAllButton, gridText({ includeHeader: true }), { append: event.shiftKey }));
 
     const copyBodyButton = document.createElement("button");
     copyBodyButton.type = "button";
     setIconButton(copyBodyButton, "Body", "copy");
-    copyBodyButton.title = "Copy table without header";
     copyBodyButton.addEventListener("click", (event) => copyFromButton(copyBodyButton, gridText({ includeHeader: false }), { append: event.shiftKey }));
 
     const downloadCsvButton = document.createElement("button");
     downloadCsvButton.type = "button";
     setIconButton(downloadCsvButton, "CSV", "download");
-    downloadCsvButton.title = "Download as CSV";
     downloadCsvButton.addEventListener("click", () => downloadRows(gridRows({ includeHeader: true }), "csv"));
 
     const downloadTsvButton = document.createElement("button");
     downloadTsvButton.type = "button";
     setIconButton(downloadTsvButton, "TSV", "download");
-    downloadTsvButton.title = "Download as TSV";
     downloadTsvButton.addEventListener("click", () => downloadRows(gridRows({ includeHeader: true }), "tsv"));
 
-    actions.append(wrapLabel, filterModeLabel, numberFormatButton, headerButton, fitButton, copyButton, copyAllButton, copyBodyButton, downloadCsvButton, downloadTsvButton);
+    actions.append(wrapButton, filterModeButton, numberFormatButton, headerButton, fitButton, copyButton, copyAllButton, copyBodyButton, downloadCsvButton, downloadTsvButton);
     chrome.append(summary, actions);
 
     const scroller = document.createElement("div");
@@ -342,12 +327,15 @@
     table.className = "data-grid";
     table.addEventListener("mousedown", handleGridMouseDown);
     table.addEventListener("mouseover", handleGridMouseOver);
+    table.addEventListener("dblclick", handleGridDoubleClick);
     table.addEventListener("contextmenu", handleGridContextMenu);
     document.addEventListener("mouseup", handleGridMouseUp);
 
     scroller.appendChild(table);
     container.append(chrome, scroller);
     renderGridTable(container);
+    scroller.scrollTop = previousScrollTop;
+    scroller.scrollLeft = previousScrollLeft;
     scheduleInitialColumnFit(container);
   }
 
@@ -447,7 +435,8 @@
     return nextState;
   }
 
-  function openTableGrid(table) {
+  function openTableGrid(table, options = {}) {
+    if (openGridModal) return;
     const previousGrid = activeGrid;
     const overlay = document.createElement("div");
     overlay.className = "grid-modal";
@@ -459,7 +448,13 @@
 
     const title = document.createElement("div");
     title.className = "grid-modal-title";
-    title.textContent = "Markdown table";
+    const markdownSourceStart = Number(table.dataset.mdSourceStart);
+    const markdownSourceEnd = Number(table.dataset.mdSourceEnd);
+    const editable = Number.isFinite(markdownSourceStart) &&
+      Number.isFinite(markdownSourceEnd) &&
+      typeof window.__mdViewerMarkdownTableEdit === "function" &&
+      window.__mdViewerCanEditDocument?.() !== false;
+    title.textContent = editable ? "Markdown table · Editable" : "Markdown table";
 
     const closeButton = document.createElement("button");
     closeButton.type = "button";
@@ -468,11 +463,25 @@
     const gridHost = document.createElement("section");
     gridHost.className = "data-grid-view grid-modal-body";
 
-    function close() {
+    const modalState = {
+      close,
+      gridHost,
+      markdownSourceStart,
+      modalGrid: null,
+      overlay,
+      previousGrid,
+      tableIndex: Array.from(document.querySelectorAll("table[data-md-source-start]")).indexOf(table),
+      title
+    };
+
+    function close(options = {}) {
+      if (openGridModal !== modalState) return;
       overlay.remove();
       activeGrid = previousGrid;
+      openGridModal = null;
       document.body.classList.remove("has-grid-modal");
       document.removeEventListener("keydown", handleEscape);
+      if (options.refresh !== false && modalState.modalGrid?.changed) window.__mdViewerRefreshDocument?.();
     }
 
     function handleEscape(event) {
@@ -485,13 +494,71 @@
     overlay.append(header, gridHost);
     document.body.classList.add("has-grid-modal");
     document.body.appendChild(overlay);
-    renderDataGridRows(gridHost, tableToRows(table));
+    openGridModal = modalState;
+    renderDataGridRows(gridHost, tableToRows(table), {
+      editable,
+      kind: editable ? "markdown-table" : null,
+      markdownSourceEnd,
+      markdownSourceStart
+    });
+    modalState.modalGrid = activeGrid;
+    if (editable && Number.isFinite(options.editRow) && Number.isFinite(options.editColumn)) {
+      requestAnimationFrame(() => {
+        if (options.editRow === 0) {
+          const header = gridHost.querySelector(`th[data-grid-header="true"][data-column="${options.editColumn}"]`);
+          if (header) beginHeaderEdit(header, options.editColumn);
+        } else {
+          const cell = gridHost.querySelector(`td[data-row="${options.editRow - 1}"][data-column="${options.editColumn}"]`);
+          if (cell) beginCellEdit(cell);
+        }
+      });
+    }
     closeButton.focus();
+  }
+
+  function hasOpenMarkdownTableGrid() {
+    return Boolean(openGridModal?.overlay?.isConnected);
+  }
+
+  function refreshOpenMarkdownTableGrid(root) {
+    const modalState = openGridModal;
+    if (!modalState?.overlay?.isConnected) return false;
+
+    const tables = Array.from(root.querySelectorAll("table[data-md-source-start]"));
+    const table = tables.find((candidate) =>
+      Number(candidate.dataset.mdSourceStart) === Number(modalState.markdownSourceStart)
+    ) || tables[modalState.tableIndex];
+
+    if (!table) {
+      modalState.close({ refresh: false });
+      return false;
+    }
+
+    const markdownSourceStart = Number(table.dataset.mdSourceStart);
+    const markdownSourceEnd = Number(table.dataset.mdSourceEnd);
+    const editable = Number.isFinite(markdownSourceStart) &&
+      Number.isFinite(markdownSourceEnd) &&
+      typeof window.__mdViewerMarkdownTableEdit === "function" &&
+      window.__mdViewerCanEditDocument?.() !== false;
+
+    renderDataGridRows(modalState.gridHost, tableToRows(table), {
+      editable,
+      kind: editable ? "markdown-table" : null,
+      markdownSourceEnd,
+      markdownSourceStart
+    });
+    modalState.markdownSourceStart = markdownSourceStart;
+    modalState.modalGrid = activeGrid;
+    modalState.title.textContent = editable ? "Markdown table · Editable" : "Markdown table";
+    return true;
   }
 
   function renderGridTable(container) {
     const table = container.querySelector(".data-grid");
     const summary = container.querySelector(".grid-summary");
+    const scroller = container.querySelector(".grid-scroll");
+    const scrollTop = scroller?.scrollTop || 0;
+    const scrollLeft = scroller?.scrollLeft || 0;
     const visibleRows = getVisibleRows();
 
     table.innerHTML = "";
@@ -500,6 +567,10 @@
     applyGridTableWidth(table);
     summary.textContent = `${visibleRows.length} of ${activeGrid.rows.length} rows x ${activeGrid.columns.length} columns`;
     paintSelection(container);
+    if (scroller) {
+      scroller.scrollTop = scrollTop;
+      scroller.scrollLeft = scrollLeft;
+    }
   }
 
   function renderColGroup() {
@@ -567,6 +638,8 @@
 
     activeGrid.columns.forEach((name, columnIndex) => {
       const th = document.createElement("th");
+      th.dataset.column = String(columnIndex);
+      th.dataset.gridHeader = "true";
       if (isNumericColumn(columnIndex)) th.classList.add("is-numeric");
       const headerContent = document.createElement("div");
       headerContent.className = "header-cell";
@@ -576,8 +649,13 @@
       titleButton.className = "column-title";
       titleButton.textContent = name || `Column ${columnIndex + 1}`;
       titleButton.title = "Select this column";
-      titleButton.addEventListener("click", () => {
-        selectColumn(container, columnIndex);
+      titleButton.addEventListener("click", (event) => {
+        selectColumn(container, columnIndex, event);
+      });
+      titleButton.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        beginHeaderEdit(th, columnIndex);
       });
 
       const sortButton = document.createElement("button");
@@ -762,10 +840,16 @@
     return sort.direction === "desc" ? "↓" : "↑";
   }
 
-  function selectColumn(container, columnIndex) {
+  function selectColumn(container, columnIndex, event = null) {
     blurFocusedFilterInput();
     const lastRow = Math.max(0, getVisibleRows().length - 1);
     activeGrid.container = container;
+    if (event) {
+      startSelection(container, 0, columnIndex, lastRow, columnIndex, event);
+      activeGrid.selection.dragging = false;
+      paintSelection(container);
+      return;
+    }
     activeGrid.selection.ranges = [
       {
         anchorRow: 0,
@@ -947,8 +1031,291 @@
     renderGridTable(container);
   }
 
+  function handleGridDoubleClick(event) {
+    if (!activeGrid?.editable) return;
+    const cell = event.target.closest("td");
+    if (!cell) return;
+    event.preventDefault();
+    event.stopPropagation();
+    beginCellEdit(cell);
+  }
+
+  function beginCellEdit(cell) {
+    if (!activeGrid?.editable || cell.querySelector(".grid-cell-editor")) return;
+    const visibleRow = Number(cell.dataset.row);
+    const column = Number(cell.dataset.column);
+    const row = getVisibleRows()[visibleRow];
+    if (!row) return;
+
+    const original = String(row.cells[column] || "");
+    const cellBounds = cell.getBoundingClientRect();
+    const cellWidth = Math.ceil(cell.clientWidth || cellBounds.width || cell.offsetWidth || 0);
+    const cellHeight = Math.ceil(cell.clientHeight || cellBounds.height || cell.offsetHeight || 0);
+    const input = document.createElement("textarea");
+    input.className = "grid-cell-editor";
+    input.rows = 1;
+    input.value = original;
+    if (cellWidth) input.style.width = `${cellWidth}px`;
+    if (cellHeight) input.style.height = `${cellHeight}px`;
+    input.addEventListener("mousedown", (event) => event.stopPropagation());
+    cell.textContent = "";
+    cell.appendChild(input);
+
+    let finished = false;
+    const finish = (commit, move = 0) => {
+      if (finished) return;
+      finished = true;
+      if (commit) {
+        row.cells[column] = input.value;
+        refreshGridAfterCellEdit(activeGrid.container, row.sourceIndex, column);
+      } else {
+        renderGridTable(activeGrid.container);
+      }
+      if (move) focusAdjacentGridCell(row.sourceIndex, column + move);
+    };
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true, event.shiftKey ? -activeGrid.columns.length : activeGrid.columns.length);
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+        finish(true, event.shiftKey ? -1 : 1);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    input.focus();
+    input.select();
+  }
+
+  function beginHeaderEdit(headerCell, columnIndex) {
+    if (!activeGrid?.editable || !activeGrid.headerEnabled || headerCell.querySelector(".grid-cell-editor")) return;
+    const original = String(activeGrid.columns[columnIndex] || "");
+    const headerContent = headerCell.querySelector(".header-cell");
+    if (!headerContent) return;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "grid-cell-editor grid-header-editor";
+    input.value = original;
+    headerContent.hidden = true;
+    headerCell.appendChild(input);
+
+    let finished = false;
+    const finish = (commit) => {
+      if (finished) return;
+      finished = true;
+      if (commit) {
+        activeGrid.sourceRows[0][columnIndex] = input.value;
+        rebuildGridAfterStructure(activeGrid.container, { row: 0, column: columnIndex });
+      } else {
+        renderGridTable(activeGrid.container);
+      }
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    input.focus();
+    input.select();
+  }
+
+  function focusAdjacentGridCell(sourceIndex, flatColumn) {
+    if (!activeGrid?.editable) return;
+    const columnCount = activeGrid.columns.length;
+    let nextSourceRow = sourceIndex + Math.floor(flatColumn / columnCount);
+    let nextColumn = ((flatColumn % columnCount) + columnCount) % columnCount;
+    nextSourceRow = Math.max(0, Math.min(activeGrid.rows.length - 1, nextSourceRow));
+    const visibleIndex = getVisibleRows().findIndex((row) => row.sourceIndex === nextSourceRow);
+    const cell = activeGrid.container.querySelector(`td[data-row="${visibleIndex}"][data-column="${nextColumn}"]`);
+    if (cell) {
+      selectSingleCell(activeGrid.container, visibleIndex, nextColumn);
+      beginCellEdit(cell);
+    }
+  }
+
+  function refreshGridAfterCellEdit(container, sourceRow, column) {
+    activeGrid.columnMeta = detectGridColumnMeta([activeGrid.columns, ...activeGrid.rows.map((row) => row.cells)], activeGrid.numberFormat);
+    notifyGridDocumentChanged();
+    renderGridTable(container);
+    const visibleRow = getVisibleRows().findIndex((row) => row.sourceIndex === sourceRow);
+    if (visibleRow >= 0) selectSingleCell(container, visibleRow, column);
+  }
+
+  function handleGridPaste(event) {
+    if (!activeGrid?.editable || isTextInput(event.target) || !hasSelection()) return;
+    const text = event.clipboardData?.getData("text/plain");
+    if (typeof text !== "string" || !text.length) return;
+
+    const selection = normalizedSelections()[0];
+    if (!selection) return;
+    event.preventDefault();
+    hideGridContextMenu();
+
+    const pastedRows = parseClipboardGrid(text);
+    if (!pastedRows.length) return;
+    const startColumn = selection.startColumn;
+    const visibleRows = getVisibleRows();
+    const target = visibleRows[selection.startRow];
+    const startSourceRow = target?.sourceIndex ?? activeGrid.rows.length;
+    const requiredColumns = startColumn + Math.max(...pastedRows.map((row) => row.length), 1);
+
+    while (activeGrid.columns.length < requiredColumns) insertColumnData(activeGrid.columns.length);
+
+    pastedRows.forEach((values, rowOffset) => {
+      let row = visibleRows[selection.startRow + rowOffset];
+      if (!row) {
+        const cells = Array.from({ length: activeGrid.columns.length }, () => "");
+        activeGrid.sourceRows.push(cells);
+        row = { cells, sourceIndex: activeGrid.sourceRows.length - (activeGrid.headerEnabled ? 2 : 1) };
+      }
+      while (row.cells.length < activeGrid.columns.length) row.cells.push("");
+      values.forEach((value, columnOffset) => {
+        row.cells[startColumn + columnOffset] = value;
+      });
+    });
+
+    rebuildGridAfterStructure(activeGrid.container, {
+      row: startSourceRow,
+      column: startColumn,
+      endRow: startSourceRow + pastedRows.length - 1,
+      endColumn: requiredColumns - 1
+    });
+  }
+
+  function parseClipboardGrid(text) {
+    const normalized = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n$/, "");
+    return parseDelimited(normalized, "\t");
+  }
+
+  function insertColumnData(columnIndex) {
+    const headerName = uniqueColumnName(`Column ${columnIndex + 1}`);
+    activeGrid.sourceRows.forEach((row, rowIndex) => {
+      row.splice(columnIndex, 0, activeGrid.headerEnabled && rowIndex === 0 ? headerName : "");
+    });
+    if (!activeGrid.sourceRows.length) activeGrid.sourceRows.push([headerName]);
+    activeGrid.columns.splice(columnIndex, 0, headerName);
+  }
+
+  function insertGridColumn(container, columnIndex) {
+    if (!activeGrid?.editable) return;
+    insertColumnData(Math.max(0, Math.min(columnIndex, activeGrid.columns.length)));
+    rebuildGridAfterStructure(container, { row: 0, column: columnIndex });
+  }
+
+  function deleteGridColumn(container, columnIndex) {
+    if (!activeGrid?.editable) return;
+    if (activeGrid.columns.length <= 1) return;
+    activeGrid.sourceRows.forEach((row) => row.splice(columnIndex, 1));
+    rebuildGridAfterStructure(container, { row: 0, column: Math.min(columnIndex, activeGrid.columns.length - 2) });
+  }
+
+  function insertGridRow(container, visibleRowIndex, after) {
+    if (!activeGrid?.editable) return;
+    const target = getVisibleRows()[visibleRowIndex];
+    const sourceIndex = target?.sourceIndex ?? activeGrid.rows.length;
+    const bodyIndex = sourceIndex + (after ? 1 : 0);
+    const rawIndex = bodyIndex + (activeGrid.headerEnabled ? 1 : 0);
+    activeGrid.sourceRows.splice(rawIndex, 0, Array.from({ length: activeGrid.columns.length }, () => ""));
+    rebuildGridAfterStructure(container, { row: bodyIndex, column: 0 });
+  }
+
+  function deleteGridRow(container, visibleRowIndex) {
+    if (!activeGrid?.editable || !activeGrid.rows.length) return;
+    const target = getVisibleRows()[visibleRowIndex];
+    if (!target) return;
+    const rawIndex = target.sourceIndex + (activeGrid.headerEnabled ? 1 : 0);
+    activeGrid.sourceRows.splice(rawIndex, 1);
+    rebuildGridAfterStructure(container, {
+      row: Math.min(target.sourceIndex, Math.max(0, activeGrid.rows.length - 2)),
+      column: 0
+    });
+  }
+
+  function uniqueColumnName(base) {
+    let name = base;
+    let suffix = 2;
+    const existing = new Set(activeGrid.columns.map((column) => String(column).toLowerCase()));
+    while (existing.has(name.toLowerCase())) {
+      name = `${base} ${suffix}`;
+      suffix += 1;
+    }
+    return name;
+  }
+
+  function rebuildGridAfterStructure(container, selection = {}) {
+    activeGrid.sourceRows = normalizeRows(activeGrid.sourceRows);
+    const model = gridModelFromSourceRows(activeGrid.sourceRows, activeGrid.headerEnabled, activeGrid.numberFormat);
+    activeGrid.columns = model.columns;
+    activeGrid.rows = model.rows;
+    activeGrid.columnMeta = model.columnMeta;
+    activeGrid.columnWidths = model.columns.map((_, index) => initialColumnWidth(model.widthRows, index, {
+      columnMeta: model.columnMeta[index],
+      numberFormat: activeGrid.numberFormat
+    }));
+    activeGrid.filters = {};
+    activeGrid.filterDrafts = {};
+    activeGrid.sorts = [];
+    notifyGridDocumentChanged();
+    renderGridTable(container);
+
+    if (activeGrid.rows.length && activeGrid.columns.length) {
+      activeGrid.selection.ranges = [{
+        anchorRow: Math.max(0, Math.min(selection.row || 0, activeGrid.rows.length - 1)),
+        anchorColumn: Math.max(0, Math.min(selection.column || 0, activeGrid.columns.length - 1)),
+        focusRow: Math.max(0, Math.min(selection.endRow ?? selection.row ?? 0, activeGrid.rows.length - 1)),
+        focusColumn: Math.max(0, Math.min(selection.endColumn ?? selection.column ?? 0, activeGrid.columns.length - 1))
+      }];
+      activeGrid.selection.activeIndex = 0;
+      paintSelection(container);
+    }
+  }
+
+  function notifyGridDocumentChanged() {
+    if (!activeGrid?.editable || !activeGrid.kind) return;
+    activeGrid.changed = true;
+    if (activeGrid.kind === "markdown-table") {
+      const markdown = rowsToMarkdownTable(activeGrid.sourceRows);
+      const nextEnd = window.__mdViewerMarkdownTableEdit?.(
+        activeGrid.markdownSourceStart,
+        activeGrid.markdownSourceEnd,
+        markdown
+      );
+      if (Number.isFinite(nextEnd)) activeGrid.markdownSourceEnd = nextEnd;
+      return;
+    }
+    const delimiter = activeGrid.kind === "tsv" ? "\t" : ",";
+    window.__mdViewerDocumentEdit?.(rowsToDelimited(activeGrid.sourceRows, delimiter));
+  }
+
+  function rowsToMarkdownTable(rows) {
+    const normalized = normalizeRows(rows);
+    if (!normalized.length) return "";
+    const header = normalized[0];
+    const divider = header.map(() => "---");
+    return [header, divider, ...normalized.slice(1)]
+      .map((row) => `| ${row.map(encodeMarkdownTableCell).join(" | ")} |`)
+      .join("\n");
+  }
+
+  function encodeMarkdownTableCell(value) {
+    return String(value ?? "")
+      .replace(/\r?\n/g, "<br>")
+      .replace(/\|/g, "\\|");
+  }
+
   function handleGridMouseDown(event) {
     if (event.target.closest(".column-resize-handle")) return;
+    if (event.target.closest(".grid-cell-editor")) return;
     hideGridContextMenu();
 
     const cell = event.target.closest("td");
@@ -1017,27 +1384,36 @@
   function handleGridContextMenu(event) {
     const cell = event.target.closest("td");
     const rowHeader = event.target.closest(".row-number-cell");
-    if ((!cell && !rowHeader) || !activeGrid) return;
+    const columnHeader = event.target.closest("th[data-grid-header='true']");
+    if ((!cell && !rowHeader && !columnHeader) || !activeGrid) return;
 
     event.preventDefault();
     blurFocusedFilterInput();
     const container = event.currentTarget.closest(".data-grid-view");
     activeGrid.container = container;
 
+    let columnIndex = null;
+    let visibleRowIndex = null;
     if (cell) {
       const row = Number(cell.dataset.row);
       const column = Number(cell.dataset.column);
+      visibleRowIndex = row;
+      columnIndex = column;
       if (!isCellSelected(row, column)) {
         selectSingleCell(container, row, column);
       }
+    } else if (columnHeader) {
+      columnIndex = Number(columnHeader.dataset.column);
+      selectColumn(container, columnIndex);
     } else if (rowHeader) {
       const row = Number(rowHeader.dataset.row);
+      visibleRowIndex = row;
       if (!isRowSelected(row)) {
         selectSingleRow(container, row);
       }
     }
 
-    showGridContextMenu(event.clientX, event.clientY, container);
+    showGridContextMenu(event.clientX, event.clientY, container, columnIndex, visibleRowIndex);
   }
 
   function indexMarkdownTableCells(table) {
@@ -1275,7 +1651,11 @@
   function updateMarkdownSelectionControls(table) {
     const selection = markdownTableSelection(table);
     if (selection.toggleInput) {
-      selection.toggleInput.checked = selection.enabled;
+      if (selection.toggleInput.tagName === "BUTTON") {
+        selection.toggleInput.setAttribute("aria-pressed", String(selection.enabled));
+      } else {
+        selection.toggleInput.checked = selection.enabled;
+      }
     }
   }
 
@@ -1331,7 +1711,7 @@
     return activeMarkdownTable ? markdownTableSelectionText(activeMarkdownTable) : "";
   }
 
-  function showGridContextMenu(clientX, clientY, container) {
+  function showGridContextMenu(clientX, clientY, container, columnIndex = null, visibleRowIndex = null) {
     hideGridContextMenu();
     const isGridSelection = Boolean(container && hasSelection());
     const isMarkdownSelection = !container && Boolean(activeMarkdownTableSelectionText());
@@ -1349,6 +1729,27 @@
     if (isGridSelection) {
       const copyNumbersButton = gridContextMenuButton("Copy US numbers", () => selectedGridText(container, { normalizeNumbers: true }));
       menu.append(copyNumbersButton);
+    }
+
+    if (isGridSelection && activeGrid.editable && Number.isInteger(columnIndex)) {
+      const separator = document.createElement("div");
+      separator.className = "grid-context-separator";
+      const addBefore = gridContextActionButton("Add column before", () => insertGridColumn(container, columnIndex));
+      const addAfter = gridContextActionButton("Add column after", () => insertGridColumn(container, columnIndex + 1));
+      const remove = gridContextActionButton("Delete column", () => deleteGridColumn(container, columnIndex));
+      remove.classList.add("is-danger");
+      remove.disabled = activeGrid.columns.length <= 1;
+      menu.append(separator, addBefore, addAfter, remove);
+    }
+
+    if (isGridSelection && activeGrid.editable && Number.isInteger(visibleRowIndex)) {
+      const separator = document.createElement("div");
+      separator.className = "grid-context-separator";
+      const addBefore = gridContextActionButton("Insert row above", () => insertGridRow(container, visibleRowIndex, false));
+      const addAfter = gridContextActionButton("Insert row below", () => insertGridRow(container, visibleRowIndex, true));
+      const remove = gridContextActionButton("Delete row", () => deleteGridRow(container, visibleRowIndex));
+      remove.classList.add("is-danger");
+      menu.append(separator, addBefore, addAfter, remove);
     }
 
     document.body.appendChild(menu);
@@ -1372,6 +1773,18 @@
       } finally {
         hideGridContextMenu();
       }
+    });
+    return button;
+  }
+
+  function gridContextActionButton(label, action) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      action();
+      hideGridContextMenu();
     });
     return button;
   }
@@ -1439,7 +1852,29 @@
   }
 
   function selectedGridText(container, options = {}) {
-    const blocks = normalizedSelections().map(({ startRow, endRow, startColumn, endColumn }) => {
+    const selections = normalizedSelections().sort((left, right) => (
+      left.startRow - right.startRow || left.startColumn - right.startColumn
+    ));
+    const sharesRows = selections.length > 1 && selections.every((range) => (
+      range.startRow === selections[0].startRow && range.endRow === selections[0].endRow
+    ));
+
+    if (sharesRows) {
+      const rows = [];
+      for (let row = selections[0].startRow; row <= selections[0].endRow; row += 1) {
+        const cells = [];
+        selections.forEach(({ startColumn, endColumn }) => {
+          for (let column = startColumn; column <= endColumn; column += 1) {
+            const value = container.querySelector(`td[data-row="${row}"][data-column="${column}"]`)?.textContent || "";
+            cells.push(options.normalizeNumbers ? normalizeCellForUsCopy(value, column) : value);
+          }
+        });
+        rows.push(cells.join("\t"));
+      }
+      return rows.join("\n");
+    }
+
+    const blocks = selections.map(({ startRow, endRow, startColumn, endColumn }) => {
       const rows = [];
       for (let row = startRow; row <= endRow; row += 1) {
         const cells = [];
@@ -1452,7 +1887,7 @@
       return rows.join("\n");
     });
 
-    return blocks.join("\n\n");
+    return blocks.join("\n");
   }
 
   function selectSingleCell(container, row, column) {
@@ -1974,11 +2409,15 @@
   }
 
   function updateWrappedContent(root, wrapEnabled) {
-    root.querySelectorAll(".table-viewer, table[data-copy-ready], .code-viewer, .mermaid-viewer, .source-view").forEach((element) => {
+    root.querySelectorAll(".table-viewer, table[data-copy-ready], .code-viewer, .mermaid-viewer").forEach((element) => {
       element.classList.toggle("is-wrapped", wrapEnabled);
     });
     root.querySelectorAll(".wrap-toggle-input").forEach((input) => {
-      input.checked = wrapEnabled;
+      if (input.tagName === "BUTTON") {
+        input.setAttribute("aria-pressed", String(wrapEnabled));
+      } else {
+        input.checked = wrapEnabled;
+      }
     });
   }
 
@@ -2066,9 +2505,7 @@
 
   function updateNumberFormatButton(button, format) {
     const normalized = format === "us" ? "US" : format === "vn" ? "VN" : "Auto";
-    button.textContent = normalized;
-    button.title = `Number parsing: ${normalized}. Press U to switch Auto/VN/US.`;
-    button.setAttribute("aria-label", `Number format ${normalized}`);
+    setTableIconButton(button, "number", `Number parsing: ${normalized}`, "U", normalized);
   }
 
   function syncNumberFormatButtons(format = getNumberFormat()) {
@@ -2102,8 +2539,7 @@
   }
 
   function updateHeaderButton(button, enabled = activeGrid?.headerEnabled) {
-    button.textContent = enabled ? "Header" : "A-Z";
-    button.title = enabled ? "First row is header. Press H to switch." : "Generated headers A-Z. Press H to switch.";
+    setTableIconButton(button, "header", enabled ? "First row is header" : "Generated headers A-Z", "H", enabled ? "H" : "A-Z");
     button.setAttribute("aria-pressed", String(Boolean(enabled)));
   }
 
@@ -2134,7 +2570,9 @@
 
   function tableToRows(table) {
     return Array.from(table.querySelectorAll("tr")).map((row) =>
-      Array.from(row.children).map((cell) => cell.textContent.replace(/\s+/g, " ").trim())
+      Array.from(row.children).map((cell) => (
+        cell.dataset.mdCellSource ?? cell.textContent.replace(/\s+/g, " ").trim()
+      ))
     );
   }
 
@@ -2156,8 +2594,36 @@
   }
 
   function setIconButton(button, label, type) {
-    const icon = type === "download" ? "↓" : "⧉";
-    button.innerHTML = `<span class="button-icon" aria-hidden="true">${icon}</span><span>${label}</span>`;
+    const download = type === "download";
+    const tooltip = download
+      ? `Download ${label}`
+      : label === "Selection" ? "Copy selection" : label === "Body" ? "Copy body without header" : "Copy all";
+    setTableIconButton(button, download ? "download" : label === "Selection" ? "selection" : "copy", tooltip, download ? "—" : "C", download ? label : label === "Selection" ? "" : label);
+  }
+
+  function setTableIconButton(button, icon, tooltip, shortcut = "—", badge = "") {
+    button.classList.add("table-icon-button");
+    button.innerHTML = `${tableIcon(icon)}${badge ? `<span class="table-icon-badge">${badge}</span>` : ""}`;
+    button.dataset.tooltip = tooltip;
+    button.dataset.shortcut = shortcut;
+    button.setAttribute("aria-label", shortcut && shortcut !== "—" ? `${tooltip} (${shortcut})` : tooltip);
+    button.removeAttribute("title");
+  }
+
+  function tableIcon(name) {
+    const paths = {
+      copy: '<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+      download: '<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
+      filter: '<path d="M4 5h16l-6 7v6l-4 2v-8Z"/>',
+      "filter-live": '<path d="M4 5h16l-6 7v6l-4 2v-8Z"/><path d="M18 15v5M15.5 17.5h5"/>',
+      fit: '<path d="M8 4H4v4M16 4h4v4M8 20H4v-4M16 20h4v-4"/><path d="M9 12h6M12 9v6"/>',
+      grid: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
+      header: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/>',
+      number: '<path d="M10 3 8 21M16 3l-2 18M4 9h16M3 15h16"/>',
+      selection: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/><rect x="8" y="8" width="8" height="8" rx="1"/>',
+      wrap: '<path d="M4 6h13a4 4 0 0 1 0 8H9M12 11l-3 3 3 3M4 18h4"/>'
+    };
+    return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${paths[name] || paths.grid}</svg>`;
   }
 
   async function copyText(text, options = {}) {
@@ -2203,10 +2669,13 @@
     clearActiveGrid,
     clearMarkdownTableSelection,
     detectKind,
+    hasOpenMarkdownTableGrid,
     parseDelimited,
     getActiveGridText,
     renderDataGrid,
     renderDataGridRows,
+    refreshOpenMarkdownTableGrid,
+    rowsToMarkdownTable,
     selectAllActiveGrid,
     selectAllActiveMarkdownTable,
     openHoveredMarkdownTableGrid,

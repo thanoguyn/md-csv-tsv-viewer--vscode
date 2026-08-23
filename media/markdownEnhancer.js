@@ -1,6 +1,8 @@
 (function () {
   let mermaidCounter = 0;
-  let mermaidReady = false;
+  let mermaidTheme = null;
+  let mermaidRenderTimer = null;
+  let mermaidRenderVersion = 0;
   let cleanupTocScroll = null;
   const tocStorageKey = "md-viewer-toc-visible";
 
@@ -8,7 +10,7 @@
     decorateHeadingCopyButtons(root, options);
     decorateCodeBlocks(root);
     renderTableOfContents(root, options);
-    renderMermaidBlocks(root);
+    scheduleMermaidBlocks(root);
   }
 
   function decorateHeadingCopyButtons(root, options = {}) {
@@ -102,28 +104,34 @@
   function markdownHeadingSections(sourceText) {
     const lines = String(sourceText || "").replace(/\r\n?/g, "\n").split("\n");
     const headings = [];
-    let fenced = false;
+    let fence = null;
 
     lines.forEach((line, index) => {
-      if (/^```/.test(line)) {
-        fenced = !fenced;
+      const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+      if (fenceMatch) {
+        const marker = fenceMatch[1][0];
+        if (!fence) fence = marker;
+        else if (fence === marker) fence = null;
         return;
       }
-      if (fenced) return;
+      if (fence) return;
 
-      const heading = line.match(/^(#{1,6})\s+(.+)$/);
-      if (!heading) return;
+      const heading = line.match(/^\s{0,3}(#{1,6})[ \t]+(.+)$/);
+      if (heading) {
+        headings.push({ startLine: index, endLine: index, level: heading[1].length });
+        return;
+      }
 
-      headings.push({
-        line: index,
-        level: heading[1].length
-      });
+      const setext = lines[index + 1]?.match(/^\s{0,3}(=+|-+)\s*$/);
+      if (line.trim() && setext) {
+        headings.push({ startLine: index, endLine: index + 1, level: setext[1][0] === "=" ? 1 : 2 });
+      }
     });
 
     return headings.map((heading, index) => {
       const next = headings.slice(index + 1).find((candidate) => candidate.level <= heading.level);
-      const endLine = next ? next.line : lines.length;
-      return lines.slice(heading.line + 1, endLine).join("\n").trim();
+      const endLine = next ? next.startLine : lines.length;
+      return lines.slice(heading.endLine + 1, endLine).join("\n").trim();
     });
   }
 
@@ -429,27 +437,20 @@
       const controls = document.createElement("div");
       controls.className = "code-controls";
 
-      const wrapLabel = document.createElement("label");
-      wrapLabel.className = "switch-control";
-      wrapLabel.title = "Toggle code word wrap";
-
-      const wrapInput = document.createElement("input");
-      wrapInput.type = "checkbox";
-      wrapInput.className = "wrap-toggle-input";
-      wrapInput.checked = wrapEnabled;
-      wrapInput.addEventListener("change", () => {
-        window.MDViewerTabular?.setWrapEnabled?.(wrapInput.checked, document);
+      const wrapButton = document.createElement("button");
+      wrapButton.type = "button";
+      wrapButton.className = "wrap-toggle-input";
+      setCodeIconButton(wrapButton, "wrap", "Wrap code", "W");
+      wrapButton.setAttribute("aria-pressed", String(wrapEnabled));
+      wrapButton.addEventListener("click", () => {
+        const enabled = wrapButton.getAttribute("aria-pressed") !== "true";
+        window.MDViewerTabular?.setWrapEnabled?.(enabled, document);
       });
-
-      const wrapText = document.createElement("span");
-      wrapText.textContent = "Wrap";
-      wrapLabel.append(wrapInput, wrapText);
 
       const copyButton = document.createElement("button");
       copyButton.type = "button";
       copyButton.className = "copy-code-button";
-      copyButton.textContent = "Copy";
-      copyButton.title = "Copy code block";
+      setCodeIconButton(copyButton, "copy", "Copy code block", "C");
       copyButton.addEventListener("click", (event) => copyFromButton(copyButton, code.textContent, { append: event.shiftKey }));
 
       const scroller = document.createElement("div");
@@ -457,29 +458,40 @@
 
       pre.parentNode.insertBefore(shell, pre);
       shell.append(toolbar, scroller);
-      controls.append(wrapLabel, copyButton);
+      controls.append(wrapButton, copyButton);
       toolbar.append(label, controls);
       scroller.appendChild(pre);
     });
   }
 
-  async function renderMermaidBlocks(root) {
+  function scheduleMermaidBlocks(root) {
+    const version = ++mermaidRenderVersion;
+    if (mermaidRenderTimer) window.clearTimeout(mermaidRenderTimer);
+    mermaidRenderTimer = window.setTimeout(() => {
+      mermaidRenderTimer = null;
+      renderMermaidBlocks(root, version);
+    }, 160);
+  }
+
+  async function renderMermaidBlocks(root, version = mermaidRenderVersion) {
     const blocks = Array.from(root.querySelectorAll("pre.mermaid-source:not([data-mermaid-ready])"));
     if (!blocks.length) return;
 
-    initializeMermaid();
+    initializeMermaid(currentMermaidTheme());
 
     for (const pre of blocks) {
+      if (version !== mermaidRenderVersion || !root.isConnected) return;
       pre.dataset.mermaidReady = "true";
-      await renderMermaidBlock(pre);
+      await renderMermaidBlock(pre, version);
     }
   }
 
-  async function renderMermaidBlock(pre) {
+  async function renderMermaidBlock(pre, version) {
     const source = pre.dataset.mermaidSource || "";
     const shell = document.createElement("div");
     shell.className = "mermaid-viewer";
     shell.classList.toggle("is-wrapped", getWrapState());
+    shell.dataset.mermaidSource = source;
 
     const toolbar = document.createElement("div");
     toolbar.className = "code-toolbar";
@@ -490,8 +502,7 @@
     const copyButton = document.createElement("button");
     copyButton.type = "button";
     copyButton.className = "copy-code-button";
-    copyButton.textContent = "Copy";
-    copyButton.title = "Copy Mermaid source";
+    setCodeIconButton(copyButton, "copy", "Copy Mermaid source", "C");
     copyButton.addEventListener("click", (event) => copyFromButton(copyButton, source, { append: event.shiftKey }));
 
     const diagram = document.createElement("div");
@@ -509,11 +520,14 @@
     }
 
     try {
-      const id = `md-viewer-mermaid-${Date.now()}-${mermaidCounter++}`;
-      const result = await window.mermaid.render(id, source);
+      const result = await renderMermaidSvg(source);
+      if (version !== mermaidRenderVersion || !pre.isConnected) {
+        return;
+      }
       diagram.innerHTML = result.svg;
       result.bindFunctions?.(diagram);
     } catch (error) {
+      if (version !== mermaidRenderVersion || !pre.isConnected) return;
       diagram.classList.add("mermaid-error");
       diagram.textContent = error.message || "Unable to render Mermaid diagram.";
       pre.hidden = false;
@@ -521,15 +535,77 @@
     }
   }
 
-  function initializeMermaid() {
-    if (mermaidReady || !window.mermaid?.initialize) return;
+  function initializeMermaid(theme = currentMermaidTheme(), force = false) {
+    if ((!force && mermaidTheme === theme) || !window.mermaid?.initialize) return;
 
     window.mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
-      theme: document.documentElement.dataset.theme === "dark" ? "dark" : "default"
+      theme
     });
-    mermaidReady = true;
+    mermaidTheme = theme;
+  }
+
+  function currentMermaidTheme() {
+    return document.documentElement.dataset.theme === "dark" ? "dark" : "default";
+  }
+
+  function renderMermaidSvg(source) {
+    const id = `md-viewer-mermaid-${Date.now()}-${mermaidCounter++}`;
+    return window.mermaid.render(id, source);
+  }
+
+  async function refreshMermaidTheme(root) {
+    const shells = Array.from(root?.querySelectorAll?.(".mermaid-viewer[data-mermaid-source]") || []);
+    if (!shells.length || !window.mermaid?.render) return;
+
+    const version = ++mermaidRenderVersion;
+    if (mermaidRenderTimer) {
+      window.clearTimeout(mermaidRenderTimer);
+      mermaidRenderTimer = null;
+    }
+    initializeMermaid(currentMermaidTheme(), true);
+
+    for (const shell of shells) {
+      if (version !== mermaidRenderVersion || !shell.isConnected) return;
+      const diagram = shell.querySelector(".mermaid-diagram");
+      if (!diagram) continue;
+      try {
+        const result = await renderMermaidSvg(shell.dataset.mermaidSource || "");
+        if (version !== mermaidRenderVersion || !shell.isConnected) return;
+        diagram.classList.remove("mermaid-error");
+        diagram.innerHTML = result.svg;
+        result.bindFunctions?.(diagram);
+      } catch (error) {
+        if (version !== mermaidRenderVersion || !shell.isConnected) return;
+        diagram.classList.add("mermaid-error");
+        diagram.textContent = error.message || "Unable to render Mermaid diagram.";
+      }
+    }
+  }
+
+  async function prepareMermaidForExport(root, options = {}) {
+    const shells = Array.from(root?.querySelectorAll?.(".mermaid-viewer[data-mermaid-source]") || []);
+    if (!shells.length || !window.mermaid?.render) return;
+
+    const restoreTheme = currentMermaidTheme();
+    initializeMermaid(options.theme || "default", true);
+    try {
+      for (const shell of shells) {
+        const diagram = shell.querySelector(".mermaid-diagram");
+        if (!diagram) continue;
+        try {
+          const result = await renderMermaidSvg(shell.dataset.mermaidSource || "");
+          diagram.classList.remove("mermaid-error");
+          diagram.innerHTML = result.svg;
+          result.bindFunctions?.(diagram);
+        } catch (error) {
+          // Keep the cloned error/source state so one invalid chart does not block PDF export.
+        }
+      }
+    } finally {
+      initializeMermaid(restoreTheme, true);
+    }
   }
 
   function isMermaidCode(code) {
@@ -550,20 +626,47 @@
   }
 
   async function copyFromButton(button, text, options = {}) {
-    const originalText = button.textContent;
+    const originalHtml = button.innerHTML;
+    const originalTooltip = button.dataset.tooltip;
+    const originalLabel = button.getAttribute("aria-label");
     button.disabled = true;
 
     try {
       await copyText(text, options);
-      button.textContent = options.append ? "Appended" : "Copied";
+      setCodeIconButton(button, "check", options.append ? "Appended to clipboard" : "Copied to clipboard", "");
     } catch (error) {
-      button.textContent = "Failed";
+      setCodeIconButton(button, "error", "Copy failed", "");
     }
 
     window.setTimeout(() => {
       button.disabled = false;
-      button.textContent = originalText;
+      button.classList.remove("is-success", "is-error");
+      button.innerHTML = originalHtml;
+      button.dataset.tooltip = originalTooltip;
+      button.dataset.shortcut = "C";
+      button.setAttribute("aria-label", originalLabel || "Copy code block (C)");
     }, 1200);
+  }
+
+  function setCodeIconButton(button, icon, tooltip, shortcut = "—") {
+    button.classList.add("code-icon-button", "table-icon-button");
+    button.classList.toggle("is-success", icon === "check");
+    button.classList.toggle("is-error", icon === "error");
+    button.innerHTML = codeIconSvg(icon);
+    button.dataset.tooltip = tooltip;
+    button.dataset.shortcut = shortcut || "—";
+    button.setAttribute("aria-label", shortcut ? `${tooltip} (${shortcut})` : tooltip);
+    button.removeAttribute("title");
+  }
+
+  function codeIconSvg(name) {
+    const paths = {
+      check: '<path d="m5 12 4 4L19 6"/>',
+      copy: '<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+      error: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/>',
+      wrap: '<path d="M4 6h13a4 4 0 0 1 0 8H9M12 11l-3 3 3 3M4 18h4"/>'
+    };
+    return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${paths[name] || paths.copy}</svg>`;
   }
 
   async function copyText(text, options = {}) {
@@ -634,6 +737,8 @@
   window.MDViewerMarkdownEnhancer = {
     enhance,
     clearToc,
-    setTocVisible
+    setTocVisible,
+    refreshMermaidTheme,
+    prepareMermaidForExport
   };
 })();

@@ -8,7 +8,8 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(VIEW_TYPE, provider, {
-      supportsMultipleEditorsPerDocument: false,
+      // Git diffs and split editors need two webview instances to coexist.
+      supportsMultipleEditorsPerDocument: true,
       webviewOptions: {
         retainContextWhenHidden: true
       }
@@ -104,6 +105,11 @@ class MdViewerEditorProvider {
         await saveCopy(document, message);
       } else if (message?.type === "exportPdf") {
         await exportPdf(document, message);
+      } else if (message?.type === "updateDocument") {
+        await updateDocument(document, message.text);
+      } else if (message?.type === "saveDocument") {
+        const applied = await updateDocument(document, message.text);
+        if (applied) await document.save();
       } else if (message?.type === "info") {
         vscode.window.showInformationMessage(String(message.message || ""));
       } else if (message?.type === "error") {
@@ -117,9 +123,10 @@ class MdViewerEditorProvider {
     const media = (...parts) => webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", ...parts));
     const initialDocument = {
       text: document.getText(),
-      meta: document.uri.fsPath || document.uri.toString(),
+      meta: displayMeta(document.uri),
       kind: detectKind(document.uri.fsPath || document.uri.toString(), document.languageId),
-      filename: filenameFromUri(document.uri)
+      filename: filenameFromUri(document.uri),
+      readonly: !isEditableDocument(document)
     };
     const assets = {
       html2canvas: String(media("vendor", "pdf", "html2canvas.min.js")),
@@ -143,31 +150,36 @@ class MdViewerEditorProvider {
           <p id="documentMeta"></p>
         </div>
         <div class="actions">
-          <button id="openEdit" type="button" title="Open as text editor (E)">Edit</button>
-          <label class="switch-control toolbar-switch" title="Toggle full width">
-            <input id="toggleFullWidth" type="checkbox">
-            <span>Full width</span>
-          </label>
-          <label class="switch-control toolbar-switch" title="Toggle source view">
-            <input id="toggleSource" type="checkbox">
-            <span>Source</span>
-          </label>
-          <label class="switch-control toolbar-switch" title="Toggle table of contents">
-            <input id="toggleToc" type="checkbox">
-            <span>TOC</span>
-          </label>
-          <button id="downloadDocument" type="button" title="Save a copy">Save copy</button>
-          <button id="downloadPdf" type="button" title="Export current preview as PDF">PDF</button>
-          <button id="showHelp" type="button" title="Show help">Help</button>
-          <button id="toggleTheme" type="button" title="Toggle theme">Theme</button>
+          <div class="mode-switch" role="radiogroup" aria-label="View mode">
+            <button id="modeViewer" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="true" data-tooltip="Viewer" data-shortcut="1">${toolbarIcon("eye")}</button>
+            <button id="modeRaw" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="false" data-tooltip="Open in VS Code text editor" data-shortcut="2 / E">${toolbarIcon("code")}</button>
+            <button id="modeWysiwyg" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="false" data-tooltip="WYSIWYG editor" data-shortcut="3">${toolbarIcon("edit")}</button>
+          </div>
+          <span class="toolbar-divider" aria-hidden="true"></span>
+          <button id="toggleFullWidth" class="toolbar-icon-button" type="button" aria-pressed="false" data-tooltip="Full width" data-shortcut="F">${toolbarIcon("expand")}</button>
+          <button id="toggleToc" class="toolbar-icon-button" type="button" aria-pressed="false" data-tooltip="Table of contents" data-shortcut="T">${toolbarIcon("list")}</button>
+          <button id="toggleGithubStyle" class="toolbar-icon-button" type="button" aria-pressed="false" data-tooltip="GitHub Markdown style" data-shortcut="G">${toolbarIcon("style")}</button>
+          <button id="downloadDocument" class="toolbar-icon-button" type="button" data-tooltip="Save a copy" data-shortcut="D">${toolbarIcon("download")}</button>
+          <button id="togglePrintPdf" class="toolbar-icon-button" type="button" aria-pressed="true" data-tooltip="Print-friendly PDF" data-shortcut="Shift+P">${toolbarIcon("print")}</button>
+          <button id="downloadPdf" class="toolbar-icon-button" type="button" data-tooltip="Export PDF" data-shortcut="P">${toolbarIcon("file")}</button>
+          <button id="showHelp" class="toolbar-icon-button" type="button" data-tooltip="Help" data-shortcut="?">${toolbarIcon("help")}</button>
+          <button id="toggleTheme" class="toolbar-icon-button" type="button" data-tooltip="Toggle theme" data-shortcut="M">${toolbarIcon("theme")}</button>
         </div>
       </header>
 
       <main id="dropZone" class="workspace">
         <article id="preview" class="markdown-body" hidden></article>
         <section id="dataGrid" class="data-grid-view" hidden></section>
-        <section id="sourceView" class="source-view" hidden>
-          <pre><code id="sourceCode"></code></pre>
+        <section id="wysiwygView" class="wysiwyg-view" hidden>
+          <div class="wysiwyg-toolbar" role="toolbar" aria-label="Rich text formatting">
+            <button type="button" data-format="bold" data-tooltip="Bold" data-shortcut="⌘/Ctrl+B"><strong>B</strong></button>
+            <button type="button" data-format="italic" data-tooltip="Italic" data-shortcut="⌘/Ctrl+I"><em>I</em></button>
+            <button type="button" data-block="h2" data-tooltip="Heading" data-shortcut="—">H2</button>
+            <button type="button" data-format="insertUnorderedList" data-tooltip="Bullet list" data-shortcut="—">${toolbarIcon("bullets")}</button>
+            <button type="button" data-format="insertOrderedList" data-tooltip="Numbered list" data-shortcut="—">${toolbarIcon("numbers")}</button>
+            <button type="button" data-format="createLink" data-tooltip="Link" data-shortcut="⌘/Ctrl+K">${toolbarIcon("link")}</button>
+          </div>
+          <article id="wysiwygEditor" class="markdown-body wysiwyg-editor" contenteditable="true" role="textbox" aria-multiline="true"></article>
         </section>
       </main>
     </div>
@@ -177,6 +189,8 @@ class MdViewerEditorProvider {
       window.__MD_VIEWER_ASSETS__ = ${safeJson(assets)};
       window.__MD_VIEWER_BASE_URI__ = ${safeJson(webviewBaseUriForDocument(webview, document.uri))};
     </script>
+    <script nonce="${nonce}" src="${media("vendor", "markdown", "marked.umd.js")}"></script>
+    <script nonce="${nonce}" src="${media("vendor", "markdown", "purify.min.js")}"></script>
     <script nonce="${nonce}" src="${media("markdown.js")}"></script>
     <script nonce="${nonce}" src="${media("tabular.js")}"></script>
     <script nonce="${nonce}" src="${media("vendor", "mermaid", "mermaid.min.js")}"></script>
@@ -185,6 +199,46 @@ class MdViewerEditorProvider {
   </body>
 </html>`;
   }
+}
+
+async function updateDocument(document, nextText) {
+  if (!isEditableDocument(document)) {
+    vscode.window.showWarningMessage("This side of the diff is read-only.");
+    return false;
+  }
+
+  const text = String(nextText ?? "");
+  if (text === document.getText()) return true;
+
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, new vscode.Range(0, 0, document.lineCount, 0), text);
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) vscode.window.showErrorMessage("MD Viewer could not apply the edit.");
+  return applied;
+}
+
+function isEditableDocument(document) {
+  return document.uri.scheme !== "git" && !document.isClosed;
+}
+
+function toolbarIcon(name) {
+  const paths = {
+    eye: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/>',
+    code: '<path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14"/>',
+    edit: '<path d="M4 20h4l10.5-10.5a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/>',
+    expand: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/><path d="m3 8 6-6M21 8l-6-6M3 16l6 6M21 16l-6 6"/>',
+    list: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
+    download: '<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
+    file: '<path d="M6 2h8l4 4v16H6Z"/><path d="M14 2v5h5M9 13h6M9 17h6"/>',
+    help: '<circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.4 2.4 0 1 1 3.5 2.1c-.8.4-1.3 1-1.3 1.9M12 17h.01"/>',
+    theme: '<path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/>',
+    bullets: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>',
+    numbers: '<path d="M10 6h10M10 12h10M10 18h10M4 5h1v3M4 11h2l-2 3h2M4 17h2l-2 2h2"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"/>',
+    style: '<path d="M4 20c2.8 0 4.5-1.2 4.5-3.5 0-1.4-1-2.5-2.5-2.5S3.5 15.2 3.5 17c0 1 .2 2 .5 3Z"/><path d="m8 14 8.8-8.8a2.1 2.1 0 0 1 3 3L11 17"/><path d="m14.5 7.5 3 3"/>',
+    print: '<path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M7 14h10v7H7Z"/><path d="M17 11h.01"/>'
+  };
+  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${paths[name] || paths.help}</svg>`;
 }
 
 async function saveCopy(document, message) {
@@ -247,19 +301,20 @@ function postDocumentText(webview, documentInfo) {
   webview.postMessage({
     type: "documentUpdate",
     text: documentInfo.text,
-    meta: documentInfo.uri.fsPath || documentInfo.uri.toString(),
+    meta: displayMeta(documentInfo.uri),
     kind: detectKind(documentInfo.uri.fsPath || documentInfo.uri.toString(), documentInfo.languageId),
-    filename: filenameFromUri(documentInfo.uri)
+    filename: filenameFromUri(documentInfo.uri),
+    readonly: documentInfo.uri.scheme === "git"
   });
 }
 
 function localResourceRootsForDocument(uri) {
-  if (uri.scheme !== "file" || !uri.fsPath) return [];
+  if (!uri.fsPath) return [];
   return [vscode.Uri.file(path.dirname(uri.fsPath))];
 }
 
 function webviewBaseUriForDocument(webview, uri) {
-  if (uri.scheme !== "file" || !uri.fsPath) return "";
+  if (!uri.fsPath) return "";
   const directoryPath = path.dirname(uri.fsPath);
   const directoryUri = vscode.Uri.file(directoryPath.endsWith(path.sep) ? directoryPath : `${directoryPath}${path.sep}`);
   const baseUri = String(webview.asWebviewUri(directoryUri));
@@ -295,6 +350,18 @@ function detectKind(source, languageId) {
 
 function filenameFromUri(uri) {
   return uri.path.split("/").filter(Boolean).pop() || "document";
+}
+
+function displayMeta(uri) {
+  const location = uri.fsPath || uri.toString();
+  if (uri.scheme !== "git") return location;
+
+  try {
+    const revision = JSON.parse(uri.query || "{}").ref;
+    return `${location} · Git ${revision || "revision"} · read-only`;
+  } catch (error) {
+    return `${location} · Git revision · read-only`;
+  }
 }
 
 function defaultUriForCopy(uri, filename) {

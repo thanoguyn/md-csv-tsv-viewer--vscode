@@ -4,31 +4,41 @@
   const vscode = acquireVsCodeApi();
   const preview = document.getElementById("preview");
   const dataGrid = document.getElementById("dataGrid");
-  const sourceView = document.getElementById("sourceView");
-  const sourceCode = document.getElementById("sourceCode");
+  const wysiwygView = document.getElementById("wysiwygView");
+  const wysiwygEditor = document.getElementById("wysiwygEditor");
   const documentMeta = document.getElementById("documentMeta");
   const dropZone = document.getElementById("dropZone");
   const toggleTheme = document.getElementById("toggleTheme");
   const toggleFullWidth = document.getElementById("toggleFullWidth");
-  const toggleSource = document.getElementById("toggleSource");
   const toggleToc = document.getElementById("toggleToc");
-  const openEdit = document.getElementById("openEdit");
+  const toggleGithubStyle = document.getElementById("toggleGithubStyle");
+  const togglePrintPdf = document.getElementById("togglePrintPdf");
+  const modeButtons = Array.from(document.querySelectorAll(".mode-button"));
+  const modeViewer = document.getElementById("modeViewer");
+  const modeRaw = document.getElementById("modeRaw");
+  const modeWysiwyg = document.getElementById("modeWysiwyg");
   const downloadDocument = document.getElementById("downloadDocument");
   const downloadPdf = document.getElementById("downloadPdf");
   const showHelp = document.getElementById("showHelp");
   const fullWidthStorageKey = "md-viewer-full-width";
-  const sourceStorageKey = "md-viewer-source-view";
+  const modeStorageKey = "md-viewer-mode";
   const tocStorageKey = "md-viewer-toc-visible";
   const toolbarHiddenStorageKey = "md-viewer-toolbar-hidden";
   const selectionStatsStorageKey = "md-viewer-selection-stats-disabled";
+  const githubStyleStorageKey = "md-viewer-github-style";
+  const printPdfStorageKey = "md-viewer-print-pdf";
   const pdfAssets = resolvePdfAssetUrls();
   let pdfLibraryPromise = null;
   let currentDocument = {
     filename: "document",
     kind: "markdown",
     meta: "",
+    readonly: false,
     text: ""
   };
+  let currentMode = localStorage.getItem(modeStorageKey) === "wysiwyg" ? "wysiwyg" : "viewer";
+  let editTimer = null;
+  let renderingWysiwyg = false;
   let markdownAllSelected = false;
   let selectionContextMenu = null;
   let lastFocusRequestAt = 0;
@@ -46,11 +56,19 @@
     document.documentElement.dataset.theme = savedTheme;
   }
 
-  toggleFullWidth.checked = localStorage.getItem(fullWidthStorageKey) === "true";
-  dropZone.classList.toggle("is-md-full-width", toggleFullWidth.checked);
-  toggleSource.checked = localStorage.getItem(sourceStorageKey) === "true";
-  toggleToc.checked = localStorage.getItem(tocStorageKey) === "true";
+  setPressed(toggleFullWidth, localStorage.getItem(fullWidthStorageKey) === "true");
+  dropZone.classList.toggle("is-md-full-width", isPressed(toggleFullWidth));
+  setPressed(toggleToc, localStorage.getItem(tocStorageKey) === "true");
+  setPressed(toggleGithubStyle, localStorage.getItem(githubStyleStorageKey) === "true");
+  setPressed(togglePrintPdf, localStorage.getItem(printPdfStorageKey) !== "false");
+  dropZone.classList.toggle("is-github-style", isPressed(toggleGithubStyle));
   document.body.classList.toggle("is-toolbar-hidden", localStorage.getItem(toolbarHiddenStorageKey) === "true");
+  document.querySelectorAll("[data-tooltip]").forEach((element) => {
+    if (!element.getAttribute("aria-label")) {
+      const shortcut = element.dataset.shortcut && element.dataset.shortcut !== "—" ? ` (${element.dataset.shortcut})` : "";
+      element.setAttribute("aria-label", `${element.dataset.tooltip}${shortcut}`);
+    }
+  });
   dropZone.tabIndex = -1;
   window.__mdViewerFocusSurface = focusViewerSurface;
   window.__mdViewerSaveCopy = (filename, text) => {
@@ -60,14 +78,45 @@
       text
     });
   };
+  window.__mdViewerDocumentEdit = (text) => flushDocumentEdit(text);
+  window.__mdViewerCanEditDocument = () => !currentDocument.readonly;
+  window.__mdViewerMarkdownTableEdit = (start, end, tableMarkdown) => {
+    const source = currentDocument.text;
+    const eol = source.includes("\r\n") ? "\r\n" : "\n";
+    const lines = source.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    const replacement = String(tableMarkdown || "").replace(/\r\n/g, "\n").split("\n");
+    lines.splice(Number(start), Math.max(0, Number(end) - Number(start)), ...replacement);
+    flushDocumentEdit(lines.join(eol));
+    return Number(start) + replacement.length;
+  };
+  window.__mdViewerRefreshDocument = () => renderCurrentDocument();
+  window.addEventListener("blur", () => {
+    if (editTimer) flushDocumentEdit();
+  });
 
   toggleTheme.addEventListener("click", () => {
     const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = nextTheme;
     localStorage.setItem("md-viewer-theme", nextTheme);
+    window.MDViewerMarkdownEnhancer?.refreshMermaidTheme?.(preview);
   });
 
-  openEdit.addEventListener("click", openTextEditor);
+  toggleGithubStyle.addEventListener("click", () => {
+    if (toggleGithubStyle.disabled) return;
+    const enabled = !isPressed(toggleGithubStyle);
+    setPressed(toggleGithubStyle, enabled);
+    localStorage.setItem(githubStyleStorageKey, String(enabled));
+    dropZone.classList.toggle("is-github-style", enabled);
+    showToast(enabled ? "GitHub style enabled" : "Default style enabled");
+  });
+
+  togglePrintPdf.addEventListener("click", () => {
+    const enabled = !isPressed(togglePrintPdf);
+    setPressed(togglePrintPdf, enabled);
+    localStorage.setItem(printPdfStorageKey, String(enabled));
+    showToast(enabled ? "PDF: print-friendly" : "PDF: current appearance");
+  });
+
   downloadPdf.addEventListener("click", exportPdf);
   downloadDocument.addEventListener("click", saveCopy);
   showHelp.addEventListener("click", openHelp);
@@ -80,21 +129,34 @@
   document.addEventListener("pointerdown", handleViewerPointerDown, true);
   initializeFindBar();
 
-  toggleFullWidth.addEventListener("change", () => {
-    localStorage.setItem(fullWidthStorageKey, String(toggleFullWidth.checked));
-    dropZone.classList.toggle("is-md-full-width", toggleFullWidth.checked);
+  modeViewer.addEventListener("click", () => setMode("viewer"));
+  modeRaw.addEventListener("click", () => setMode("raw"));
+  modeWysiwyg.addEventListener("click", () => setMode("wysiwyg"));
+
+  toggleFullWidth.addEventListener("click", () => {
+    const enabled = !isPressed(toggleFullWidth);
+    setPressed(toggleFullWidth, enabled);
+    localStorage.setItem(fullWidthStorageKey, String(enabled));
+    dropZone.classList.toggle("is-md-full-width", enabled);
   });
 
-  toggleSource.addEventListener("change", () => {
-    localStorage.setItem(sourceStorageKey, String(toggleSource.checked));
-    renderCurrentDocument();
+  toggleToc.addEventListener("click", () => {
+    if (toggleToc.disabled) return;
+    const enabled = !isPressed(toggleToc);
+    setPressed(toggleToc, enabled);
+    localStorage.setItem(tocStorageKey, String(enabled));
+    window.MDViewerMarkdownEnhancer.setTocVisible(enabled);
+    showToast(enabled ? "TOC shown" : "TOC hidden");
   });
 
-  toggleToc.addEventListener("change", () => {
-    localStorage.setItem(tocStorageKey, String(toggleToc.checked));
-    window.MDViewerMarkdownEnhancer.setTocVisible(toggleToc.checked);
-    showToast(toggleToc.checked ? "TOC shown" : "TOC hidden");
+  wysiwygEditor.addEventListener("input", handleWysiwygInput);
+  wysiwygEditor.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      flushDocumentEdit(htmlFragmentToMarkdown(wysiwygEditor), true);
+    }
   });
+  document.querySelector(".wysiwyg-toolbar")?.addEventListener("mousedown", handleWysiwygToolbar);
 
   window.addEventListener("message", (event) => {
     if (event.data?.type !== "documentUpdate") return;
@@ -104,57 +166,78 @@
   renderDocument(window.__MD_VIEWER_INITIAL__ || {});
 
   function renderDocument(documentInfo) {
+    const nextText = String(documentInfo.text || "");
+    const isUnchangedEcho = nextText === currentDocument.text &&
+      String(documentInfo.filename || "document") === currentDocument.filename &&
+      (documentInfo.kind || "markdown") === currentDocument.kind &&
+      (documentInfo.meta || "") === currentDocument.meta;
     currentDocument = {
       filename: String(documentInfo.filename || "document"),
       kind: documentInfo.kind || "markdown",
       meta: documentInfo.meta || "",
-      text: String(documentInfo.text || "")
+      readonly: Boolean(documentInfo.readonly),
+      text: nextText
     };
+    if (isUnchangedEcho) {
+      syncModeControls();
+      return;
+    }
     renderCurrentDocument();
   }
 
   function renderCurrentDocument() {
     const { kind, meta, text } = currentDocument;
     const isDelimited = kind === "csv" || kind === "tsv";
-    const isSource = toggleSource.checked;
+    if (isDelimited && currentMode === "wysiwyg") currentMode = "viewer";
+    const isWysiwyg = currentMode === "wysiwyg" && !isDelimited;
     window.MDViewerTabular.clearMarkdownTableSelection?.();
-    toggleSource.disabled = false;
     toggleFullWidth.disabled = isDelimited;
-    toggleToc.disabled = isDelimited || isSource;
+    toggleToc.disabled = isDelimited || isWysiwyg;
+    toggleGithubStyle.disabled = isDelimited;
+    modeWysiwyg.disabled = isDelimited;
+    wysiwygEditor.contentEditable = String(!currentDocument.readonly);
+    document.querySelectorAll(".wysiwyg-toolbar button").forEach((button) => {
+      button.disabled = currentDocument.readonly;
+    });
+    syncModeControls();
 
-    if (isSource) {
-      window.MDViewerTabular.clearActiveGrid();
+    if (isDelimited) {
       window.MDViewerMarkdownEnhancer.clearToc();
-      preview.hidden = true;
-      dataGrid.hidden = true;
-      dataGrid.innerHTML = "";
-      sourceView.hidden = false;
-      sourceCode.className = `language-${kind}`;
-      sourceCode.textContent = text;
-    } else if (isDelimited) {
-      window.MDViewerMarkdownEnhancer.clearToc();
-      sourceView.hidden = true;
-      sourceCode.textContent = "";
+      wysiwygView.hidden = true;
       preview.hidden = true;
       preview.innerHTML = "";
       dataGrid.hidden = false;
-      window.MDViewerTabular.renderDataGrid(dataGrid, text, kind);
-    } else {
-      sourceView.hidden = true;
-      sourceCode.textContent = "";
+      window.MDViewerTabular.renderDataGrid(dataGrid, text, kind, { editable: !currentDocument.readonly });
+    } else if (isWysiwyg) {
+      window.MDViewerMarkdownEnhancer.clearToc();
       window.MDViewerTabular.clearActiveGrid();
+      preview.hidden = true;
+      preview.innerHTML = "";
+      dataGrid.hidden = true;
+      dataGrid.innerHTML = "";
+      wysiwygView.hidden = false;
+      renderingWysiwyg = true;
+      wysiwygEditor.innerHTML = window.MDViewerMarkdown.render(text);
+      sanitizeWysiwygSurface(wysiwygEditor);
+      renderingWysiwyg = false;
+    } else {
+      wysiwygView.hidden = true;
+      const hasOpenMarkdownGrid = window.MDViewerTabular.hasOpenMarkdownTableGrid?.();
+      if (!hasOpenMarkdownGrid) window.MDViewerTabular.clearActiveGrid();
       dataGrid.hidden = true;
       dataGrid.innerHTML = "";
       preview.innerHTML = window.MDViewerMarkdown.render(text);
       window.MDViewerTabular.decorateTables(preview);
-      window.MDViewerMarkdownEnhancer.enhance(preview, { sourceText: text, tocEnabled: toggleToc.checked });
+      window.MDViewerMarkdownEnhancer.enhance(preview, { sourceText: text, tocEnabled: isPressed(toggleToc) });
+      if (hasOpenMarkdownGrid) window.MDViewerTabular.refreshOpenMarkdownTableGrid?.(preview);
       preview.hidden = false;
     }
 
     syncWrapState();
-    dropZone.classList.toggle("is-data-mode", isDelimited && !isSource);
-    dropZone.classList.toggle("is-source-mode", isSource);
-    document.body.classList.toggle("has-grid-view", (isDelimited && !isSource) || isSource);
+    dropZone.classList.toggle("is-data-mode", isDelimited || isWysiwyg);
+    dropZone.classList.remove("is-source-mode");
+    dropZone.classList.toggle("is-wysiwyg-mode", isWysiwyg);
+    document.body.classList.toggle("has-grid-view", isDelimited || isWysiwyg);
     documentMeta.textContent = meta;
     document.title = currentDocument.filename ? `MD Viewer - ${currentDocument.filename}` : "MD Viewer";
     hideSelectionContextMenu();
@@ -163,6 +246,92 @@
     } else {
       clearFindHighlights();
     }
+  }
+
+  function setMode(mode) {
+    if (mode === "raw") {
+      if (editTimer) flushDocumentEdit();
+      currentMode = "viewer";
+      localStorage.setItem(modeStorageKey, "viewer");
+      vscode.postMessage({ type: "openEdit" });
+      return;
+    }
+    if (mode === "wysiwyg" && currentDocument.kind !== "markdown") {
+      showToast("WYSIWYG is available for Markdown", { tone: "warning" });
+      return;
+    }
+    if (editTimer) flushDocumentEdit();
+    currentMode = mode;
+    localStorage.setItem(modeStorageKey, mode);
+    renderCurrentDocument();
+    if (mode === "wysiwyg" && !currentDocument.readonly) wysiwygEditor.focus();
+  }
+
+  function syncModeControls() {
+    modeButtons.forEach((button) => {
+      const mode = button === modeViewer ? "viewer" : button === modeRaw ? "external" : "wysiwyg";
+      button.setAttribute("aria-checked", String(currentMode === mode));
+      button.classList.toggle("is-active", currentMode === mode);
+    });
+    setPressed(toggleFullWidth, isPressed(toggleFullWidth));
+    setPressed(toggleToc, isPressed(toggleToc));
+  }
+
+  function isPressed(button) {
+    return button.getAttribute("aria-pressed") === "true";
+  }
+
+  function setPressed(button, pressed) {
+    button.setAttribute("aria-pressed", String(Boolean(pressed)));
+  }
+
+  function queueDocumentEdit(text) {
+    if (currentDocument.readonly) return;
+    currentDocument.text = String(text ?? "");
+    window.clearTimeout(editTimer);
+    editTimer = window.setTimeout(() => {
+      editTimer = null;
+      vscode.postMessage({ type: "updateDocument", text: currentDocument.text });
+    }, 180);
+  }
+
+  function handleWysiwygInput() {
+    if (renderingWysiwyg) return;
+    queueDocumentEdit(htmlFragmentToMarkdown(wysiwygEditor));
+  }
+
+  function flushDocumentEdit(text = currentDocument.text, save = false) {
+    if (currentDocument.readonly) return;
+    window.clearTimeout(editTimer);
+    editTimer = null;
+    currentDocument.text = String(text ?? "");
+    vscode.postMessage({ type: save ? "saveDocument" : "updateDocument", text: currentDocument.text });
+  }
+
+  function handleWysiwygToolbar(event) {
+    const button = event.target.closest("button");
+    if (!button || currentDocument.readonly) return;
+    event.preventDefault();
+    wysiwygEditor.focus();
+    if (button.dataset.block) {
+      document.execCommand("formatBlock", false, button.dataset.block);
+    } else if (button.dataset.format === "createLink") {
+      const url = window.prompt("Link URL");
+      if (url) {
+        document.execCommand("createLink", false, url);
+        const anchor = nodeElement(window.getSelection()?.anchorNode)?.closest?.("a");
+        if (anchor && wysiwygEditor.contains(anchor)) anchor.dataset.markdownHref = url;
+      }
+    } else if (button.dataset.format) {
+      document.execCommand(button.dataset.format, false);
+    }
+    handleWysiwygInput();
+  }
+
+  function sanitizeWysiwygSurface(root) {
+    root.querySelectorAll(".table-toolbar, .code-toolbar, .heading-actions, .markdown-toc, button").forEach((element) => element.remove());
+    root.querySelectorAll("[contenteditable]").forEach((element) => element.removeAttribute("contenteditable"));
+    root.querySelectorAll("a").forEach((link) => link.removeAttribute("target"));
   }
 
   function syncWrapState() {
@@ -177,7 +346,7 @@
     const commandOrControl = event.metaKey || event.ctrlKey;
     const inTextInput = isTextInput(event.target);
 
-    if (commandOrControl && key === "f") {
+    if (commandOrControl && key === "f" && currentMode === "viewer") {
       event.preventDefault();
       openFindBar();
       return;
@@ -192,7 +361,19 @@
     if (key === "e" && !commandOrControl && !event.altKey && !event.shiftKey) {
       if (inTextInput) return;
       event.preventDefault();
-      openTextEditor();
+      setMode("raw");
+      return;
+    }
+
+    if (!commandOrControl && !event.altKey && !event.shiftKey && !inTextInput && /^[123]$/.test(key)) {
+      event.preventDefault();
+      setMode(key === "1" ? "viewer" : key === "2" ? "raw" : "wysiwyg");
+      return;
+    }
+
+    if (key === "?" && !commandOrControl && !event.altKey && !inTextInput) {
+      event.preventDefault();
+      openHelp();
       return;
     }
 
@@ -203,7 +384,7 @@
       return;
     }
 
-    if (event.ctrlKey && key === "b") {
+    if (event.ctrlKey && key === "b" && !inTextInput) {
       event.preventDefault();
       toggleToolbar();
       return;
@@ -216,27 +397,36 @@
       return;
     }
 
+    if (key === "p" && event.shiftKey && !commandOrControl && !event.altKey && !inTextInput) {
+      event.preventDefault();
+      togglePrintPdf.click();
+      return;
+    }
+
     const allowSingleKeyShortcut = !inTextInput || event.ctrlKey;
     if (commandOrControl || event.altKey || event.shiftKey || !allowSingleKeyShortcut) return;
 
     if (key === "f" && !toggleFullWidth.disabled) {
       event.preventDefault();
-      toggleFullWidth.checked = !toggleFullWidth.checked;
-      toggleFullWidth.dispatchEvent(new Event("change"));
+      toggleFullWidth.click();
     } else if (key === "t" && !toggleToc.disabled) {
       event.preventDefault();
-      toggleToc.checked = !toggleToc.checked;
-      toggleToc.dispatchEvent(new Event("change"));
-    } else if (key === "s" && !toggleSource.disabled) {
+      toggleToc.click();
+    } else if (key === "s") {
       event.preventDefault();
-      toggleSource.checked = !toggleSource.checked;
-      toggleSource.dispatchEvent(new Event("change"));
+      setMode("raw");
     } else if (key === "d") {
       event.preventDefault();
       saveCopy();
     } else if (key === "p") {
       event.preventDefault();
       exportPdf();
+    } else if (key === "m") {
+      event.preventDefault();
+      toggleTheme.click();
+    } else if (key === "g" && !toggleGithubStyle.disabled) {
+      event.preventDefault();
+      toggleGithubStyle.click();
     } else if (key === " ") {
       if (window.MDViewerTabular.openHoveredMarkdownTableGrid?.(event.target)) {
         event.preventDefault();
@@ -257,10 +447,6 @@
       const enabled = window.MDViewerTabular.toggleHeaderRow();
       if (enabled !== null) showToast(enabled ? "First row is header" : "Generated headers A-Z");
     }
-  }
-
-  function openTextEditor() {
-    vscode.postMessage({ type: "openEdit" });
   }
 
   function toggleToolbar() {
@@ -310,7 +496,7 @@
 
   function currentRenderedText() {
     if (!dataGrid.hidden) return window.MDViewerTabular.getActiveGridText({ includeHeader: true });
-    if (!sourceView.hidden) return sourceCode.textContent;
+    if (!wysiwygView.hidden) return wysiwygEditor.innerText;
     if (!preview.hidden) return viewerContentText(preview);
     return "";
   }
@@ -320,16 +506,11 @@
     if (!dataGrid.hidden && window.MDViewerTabular.selectAllActiveGrid()) return;
     if (!preview.hidden && window.MDViewerTabular.selectAllActiveMarkdownTable?.()) return;
 
-    const target = !sourceView.hidden ? sourceCode : preview;
+    const target = !wysiwygView.hidden ? wysiwygEditor : preview;
     if (!target || target.hidden) return;
 
-    if (!sourceView.hidden) {
-      selectNodeContents(sourceCode);
-      return;
-    }
-
-    selectNodeContents(preview);
-    markdownAllSelected = true;
+    selectNodeContents(target);
+    markdownAllSelected = target === preview;
   }
 
   function selectNodeContents(target) {
@@ -442,7 +623,7 @@
 
   function currentFindRoot() {
     if (!dataGrid.hidden) return dataGrid;
-    if (!sourceView.hidden) return sourceCode;
+    if (!wysiwygView.hidden) return null;
     if (!preview.hidden) return preview;
     return null;
   }
@@ -695,7 +876,6 @@
     const end = nodeElement(range.endContainer);
     if (!start || !end) return null;
 
-    if (!sourceView.hidden && sourceCode.contains(start) && sourceCode.contains(end)) return sourceCode;
     if (!preview.hidden && preview.contains(start) && preview.contains(end)) return preview;
     return null;
   }
@@ -745,18 +925,12 @@
   }
 
   function selectionMarkdown(selection) {
-    if (selection.root === sourceCode) return selection.text;
     const container = document.createElement("div");
     container.appendChild(selection.fragment.cloneNode(true));
     return htmlFragmentToMarkdown(container).trim();
   }
 
   async function copyRichSelection(selection) {
-    if (selection.root === sourceCode) {
-      await copyText(selection.text);
-      return false;
-    }
-
     const container = document.createElement("div");
     container.appendChild(selection.fragment.cloneNode(true));
     const html = container.innerHTML;
@@ -791,7 +965,13 @@
 
   function nodeToMarkdown(node, context = {}) {
     if (node.nodeType === Node.TEXT_NODE) {
-      return context.inline ? node.nodeValue || "" : normalizeMarkdownWhitespace(node.nodeValue || "");
+      const value = node.nodeValue || "";
+      if (context.inline) return value;
+      // The rendered preview inserts newline text nodes between block elements.
+      // Serializing those as a single space indented every following Markdown
+      // block, turning headings such as "## Title" into plain text.
+      if (!value.trim()) return "";
+      return `${normalizeMarkdownWhitespace(value).trim()}\n\n`;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return "";
 
@@ -834,13 +1014,13 @@
 
   function linkToMarkdown(node) {
     const label = inlineChildrenToMarkdown(node) || node.textContent || "";
-    const href = node.getAttribute("href") || "";
+    const href = node.getAttribute("data-markdown-href") || node.getAttribute("href") || "";
     return href ? `[${label}](${href})` : label;
   }
 
   function imageToMarkdown(node) {
     const alt = node.getAttribute("alt") || "";
-    const src = node.getAttribute("src") || "";
+    const src = node.getAttribute("data-markdown-src") || node.getAttribute("src") || "";
     return src ? `![${alt}](${src})` : alt;
   }
 
@@ -976,8 +1156,12 @@
     showToast("Preparing PDF...");
 
     try {
-      const { container, background } = createPdfExportSurface(root);
+      const printFriendly = isPressed(togglePrintPdf);
+      const { container, background } = createPdfExportSurface(root, { printFriendly });
       document.body.appendChild(container);
+      if (printFriendly) {
+        await window.MDViewerMarkdownEnhancer?.prepareMermaidForExport?.(container, { theme: "default" });
+      }
 
       const canvas = await pdfLibraries.html2canvas(container, {
         backgroundColor: background,
@@ -1016,7 +1200,7 @@
 
   function currentPdfRoot() {
     if (!dataGrid.hidden) return dataGrid;
-    if (!sourceView.hidden) return sourceView;
+    if (!wysiwygView.hidden) return wysiwygEditor;
     if (!preview.hidden) return preview;
     return null;
   }
@@ -1108,10 +1292,12 @@
     return window.jspdf?.jsPDF || window.jsPDF;
   }
 
-  function createPdfExportSurface(root) {
+  function createPdfExportSurface(root, options = {}) {
+    const printFriendly = Boolean(options.printFriendly);
     const computed = window.getComputedStyle(root);
-    const background = effectiveBackgroundColor(root);
-    const width = Math.max(Math.ceil(root.scrollWidth || root.getBoundingClientRect().width), 320);
+    const background = printFriendly ? "#ffffff" : effectiveBackgroundColor(root);
+    const naturalWidth = Math.max(Math.ceil(root.scrollWidth || root.getBoundingClientRect().width), 320);
+    const width = printFriendly && currentDocument.kind === "markdown" ? Math.min(naturalWidth, 760) : naturalWidth;
     const clone = root.cloneNode(true);
 
     clone.hidden = false;
@@ -1127,14 +1313,20 @@
       ".markdown-toc",
       ".find-bar",
       "button",
-      "input",
       "textarea",
       "select",
       "[hidden]"
     ].join(",")).forEach((element) => element.remove());
+    clone.querySelectorAll("input").forEach((input) => {
+      if (input.matches("input[type='checkbox']") && input.closest(".markdown-body li")) {
+        input.disabled = true;
+        return;
+      }
+      input.remove();
+    });
     unwrapFindHighlights(clone);
 
-    clone.querySelectorAll(".table-scroll, .grid-scroll, .source-view pre").forEach((element) => {
+    clone.querySelectorAll(".table-scroll, .grid-scroll").forEach((element) => {
       element.style.height = "auto";
       element.style.maxHeight = "none";
       element.style.overflow = "visible";
@@ -1142,13 +1334,15 @@
 
     const container = document.createElement("div");
     container.className = "pdf-export-root";
+    container.classList.toggle("is-print-friendly", printFriendly);
+    container.classList.toggle("is-github-style", dropZone.classList.contains("is-github-style"));
     container.style.position = "fixed";
     container.style.left = "-100000px";
     container.style.top = "0";
     container.style.width = `${width}px`;
     container.style.minHeight = "1px";
     container.style.background = background;
-    container.style.color = computed.color;
+    container.style.color = printFriendly ? "#24292f" : computed.color;
     container.style.padding = "0";
     container.style.zIndex = "-1";
     container.appendChild(clone);
@@ -1262,13 +1456,15 @@
         </header>
         <div class="help-body">
           <h3>Open and edit</h3>
-          <p>Supported files open in viewer mode. Press E or the Edit button to switch to VS Code text editing. Use the Open in MD Viewer editor title button or Command/Ctrl+Alt+V to return to viewer mode.</p>
+          <p>Use Viewer for preview, Raw Edit to open VS Code's default text editor, and WYSIWYG to edit rendered Markdown directly. WYSIWYG edits participate in VS Code undo/redo and dirty state; Command/Ctrl+S saves.</p>
+          <h3>Git changes</h3>
+          <p>Opening a changed file from Source Control shows both custom-editor sides. The historical Git side is read-only and the working-tree side remains editable.</p>
           <h3>Markdown</h3>
-          <p>Markdown supports tables with saved V-key cell/range/column selection for all tables, code block copy, Mermaid diagrams, heading section copy/select, TOC, source toggle, PDF export, dark mode, and full-width mode.</p>
+          <p>Markdown uses a sanitized GFM/CommonMark renderer with task lists, nested lists, Setext headings, reference links, autolinks, inline HTML, editable table grids, code block copy, Mermaid diagrams, heading section copy/select, TOC, PDF export, dark mode, GitHub style, and full-width mode. Double-click a Markdown table cell to edit it in Grid.</p>
           <h3>Tables</h3>
-          <p>CSV and TSV files open as an interactive grid with sorting, filters, range selection, copy, download, and numeric parsing controls.</p>
+          <p>CSV and TSV files open as an interactive grid. Double-click a cell to edit it, paste an Excel range onto the selected cell, Command/Ctrl-click non-adjacent columns to copy them as one Excel-ready block, or right-click to insert/delete rows and columns.</p>
           <h3>Shortcuts</h3>
-          <p>E opens the text editor. Command/Ctrl+Alt+V returns to viewer mode from edit mode. Command/Ctrl+F opens find. Control+B hides or shows the toolbar. F toggles full width. T toggles TOC. S toggles source. [space] opens the hovered Markdown table as Grid. W toggles wrap. V toggles saved Markdown table selection for all tables. U toggles Auto/VN/US number parsing. H toggles first row as header. D saves a copy. P exports PDF. C copies rendered content. Shift+C copies source. Command/Ctrl+A selects viewer/table content.</p>
+          <p>1 selects Viewer. 2, E, or S opens Raw Edit in VS Code. 3 selects WYSIWYG. Command/Ctrl+F opens find in Viewer. Control+B hides or shows the toolbar. F toggles full width. T toggles TOC. G toggles GitHub style. M toggles theme. Shift+P switches between print-friendly PDF and the current appearance; P exports PDF. ? opens help. [space] opens a hovered Markdown table as Grid. W toggles wrap. V toggles table selection. U toggles Auto/VN/US number parsing. H toggles first row as header. D saves a copy. C copies rendered content. Shift+C copies source. Command/Ctrl+A selects viewer/table content.</p>
         </div>
       </div>
     `;

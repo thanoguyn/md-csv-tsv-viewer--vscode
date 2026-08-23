@@ -15,18 +15,22 @@
   }
 
   function sanitizeUrl(value, options = {}) {
+    return escapeHtml(resolveUrl(value, options));
+  }
+
+  function resolveUrl(value, options = {}) {
     const trimmed = String(value || "").trim();
     if (!trimmed) return "#";
-    if ((options.image ? safeImageSchemePattern : safeLinkSchemePattern).test(trimmed)) return escapeHtml(trimmed);
-    if (options.image && imageDataPattern.test(trimmed)) return escapeHtml(trimmed);
+    if ((options.image ? safeImageSchemePattern : safeLinkSchemePattern).test(trimmed)) return trimmed;
+    if (options.image && imageDataPattern.test(trimmed)) return trimmed;
     if (explicitSchemePattern.test(trimmed)) return "#";
     if (!relativePathPattern.test(trimmed)) return "#";
 
     const baseUri = String(window.__MD_VIEWER_BASE_URI__ || "");
-    if (!baseUri) return escapeHtml(trimmed);
+    if (!baseUri) return trimmed;
 
     try {
-      return escapeHtml(new URL(trimmed, baseUri).toString());
+      return new URL(trimmed, baseUri).toString();
     } catch {
       return "#";
     }
@@ -67,9 +71,9 @@
       const src = normalizeLinkDestination(destination);
       const safeTitle = title ? ` title="${escapeHtml(title)}"` : "";
       if (bang) {
-        return stashHtml(tokens, `<img src="${sanitizeUrl(src, { image: true })}" alt="${escapeHtml(text)}"${safeTitle}>`);
+        return stashHtml(tokens, `<img src="${sanitizeUrl(src, { image: true })}" data-markdown-src="${escapeHtml(src)}" alt="${escapeHtml(text)}"${safeTitle}>`);
       }
-      return stashHtml(tokens, `<a href="${sanitizeUrl(src)}"${safeTitle} target="_blank" rel="noreferrer noopener">${inlineMarkdown(text)}</a>`);
+      return stashHtml(tokens, `<a href="${sanitizeUrl(src)}" data-markdown-href="${escapeHtml(src)}"${safeTitle} target="_blank" rel="noreferrer noopener">${inlineMarkdown(text)}</a>`);
     });
 
     output = escapeHtml(output);
@@ -108,14 +112,14 @@
     const index = parsedRows.next;
 
     const head = normalizedHeader
-      .map((cell, cellIndex) => `<th style="text-align:${normalizedAlignments[cellIndex]}">${renderTableCell(cell)}</th>`)
+      .map((cell, cellIndex) => `<th data-md-cell-source="${escapeHtml(String(cell).trim())}" style="text-align:${normalizedAlignments[cellIndex]}">${renderTableCell(cell)}</th>`)
       .join("");
     const body = rows
       .map((row) => {
         const cells = normalizedHeader
           .map((_, cellIndex) => {
             const value = row[cellIndex] || "";
-            return `<td style="text-align:${normalizedAlignments[cellIndex]}">${renderTableCell(value)}</td>`;
+            return `<td data-md-cell-source="${escapeHtml(String(value).trim())}" style="text-align:${normalizedAlignments[cellIndex]}">${renderTableCell(value)}</td>`;
           })
           .join("");
         return `<tr>${cells}</tr>`;
@@ -123,7 +127,7 @@
       .join("");
 
     return {
-      html: `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
+      html: `<table data-md-source-start="${start}" data-md-source-end="${index}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
       next: index
     };
   }
@@ -199,7 +203,15 @@
   }
 
   function renderTableCell(value) {
-    return inlineMarkdown(String(value || "").trim()).replace(/\n/g, "<br>");
+    const source = String(value || "").trim();
+    if (window.marked?.parseInline) {
+      return window.marked.parseInline(source, {
+        gfm: true,
+        breaks: true,
+        renderer: createMarkedRenderer(createHeadingSlugger())
+      });
+    }
+    return inlineMarkdown(source).replace(/\n/g, "<br>");
   }
 
   function splitTableRow(line) {
@@ -306,7 +318,7 @@
         }
       }
 
-      const heading = line.match(/^(#{1,6})\s+(.+)$/);
+      const heading = line.match(/^\s{0,3}(#{1,6})[ \t]+(.+)$/);
       if (heading) {
         const level = heading[1].length;
         const content = inlineMarkdown(heading[2].replace(/\s+#+\s*$/, ""));
@@ -347,6 +359,14 @@
         continue;
       }
 
+      // A bold-leading line is commonly used as a label/section row in notes.
+      // Keep it as its own visual line even when Markdown has no blank line.
+      if (/^\s*\*\*[^*].*?\*\*/.test(line)) {
+        blocks.push(`<p>${inlineMarkdown(line.trim())}</p>`);
+        index += 1;
+        continue;
+      }
+
       const paragraph = [line.trim()];
       index += 1;
       while (index < lines.length && lines[index].trim() && !isBlockStart(lines, index)) {
@@ -363,17 +383,178 @@
     const line = lines[index];
     return (
       /^```/.test(line) ||
-      /^(#{1,6})\s+/.test(line) ||
+      /^\s{0,3}(#{1,6})[ \t]+/.test(line) ||
       /^\s*[-+*]\s+/.test(line) ||
       /^\s*\d+\.\s+/.test(line) ||
       /^>\s?/.test(line) ||
+      /^\s*\*\*[^*].*?\*\*/.test(line) ||
       /^---+$|^\*\*\*+$|^___+$/.test(line.trim()) ||
       (isPotentialTableRow(line) && index + 1 < lines.length && isPotentialTableDivider(lines[index + 1]))
     );
   }
 
+  function renderMarkdown(markdown) {
+    if (!window.marked?.parse || !window.DOMPurify?.sanitize) {
+      return parseBlocks(markdown);
+    }
+
+    const extracted = extractInteractiveTables(markdown);
+    const prepared = separateBoldLeadingLines(extracted.markdown);
+    const renderer = createMarkedRenderer(createHeadingSlugger());
+    let html = window.marked.parse(prepared, {
+      async: false,
+      breaks: false,
+      gfm: true,
+      renderer
+    });
+
+    extracted.tables.forEach((table) => {
+      html = html.replace(table.placeholderHtml, table.html);
+    });
+
+    const sanitized = window.DOMPurify.sanitize(html, {
+      ADD_ATTR: [
+        "checked",
+        "data-markdown-href",
+        "data-markdown-src",
+        "data-md-cell-source",
+        "data-md-source-end",
+        "data-md-source-start",
+        "disabled",
+        "rel",
+        "target"
+      ],
+      FORBID_TAGS: ["script", "style"]
+    });
+
+    return rewriteRenderedUrls(sanitized);
+  }
+
+  function extractInteractiveTables(markdown) {
+    const lines = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+    const output = [];
+    const tables = [];
+    let index = 0;
+
+    while (index < lines.length) {
+      const table = index + 1 < lines.length ? parseTable(lines, index) : null;
+      if (!table) {
+        output.push(lines[index]);
+        index += 1;
+        continue;
+      }
+
+      const token = `mdviewer-table-${tables.length}-${index}`;
+      const placeholderHtml = `<div data-mdviewer-table-token="${token}"></div>`;
+      tables.push({
+        html: table.html,
+        placeholderHtml
+      });
+      output.push("", placeholderHtml, "");
+      index = table.next;
+    }
+
+    return {
+      markdown: output.join("\n"),
+      tables
+    };
+  }
+
+  function separateBoldLeadingLines(markdown) {
+    const lines = String(markdown || "").split("\n");
+    const output = [];
+    let fence = null;
+
+    lines.forEach((line) => {
+      const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+      if (fenceMatch) {
+        const marker = fenceMatch[1][0];
+        if (!fence) fence = marker;
+        else if (fence === marker) fence = null;
+        output.push(line);
+        return;
+      }
+
+      if (!fence && /^\s*\*\*[^*].*?\*\*/.test(line)) {
+        if (output.length && output[output.length - 1] !== "") output.push("");
+        output.push(line);
+        output.push("");
+        return;
+      }
+
+      output.push(line);
+    });
+
+    return output.join("\n");
+  }
+
+  function createMarkedRenderer(slugger) {
+    const renderer = new window.marked.Renderer();
+
+    renderer.heading = function (token) {
+      const content = this.parser.parseInline(token.tokens || []);
+      const id = slugger(token.text || content);
+      return `<h${token.depth}${id ? ` id="${escapeHtml(id)}"` : ""}>${content}</h${token.depth}>\n`;
+    };
+
+    renderer.link = function (token) {
+      const href = sanitizeUrl(token.href);
+      const title = token.title ? ` title="${escapeHtml(token.title)}"` : "";
+      const content = this.parser.parseInline(token.tokens || []);
+      return `<a href="${href}" data-markdown-href="${escapeHtml(token.href || "")}"${title} target="_blank" rel="noreferrer noopener">${content}</a>`;
+    };
+
+    renderer.image = function (token) {
+      const src = sanitizeUrl(token.href, { image: true });
+      const title = token.title ? ` title="${escapeHtml(token.title)}"` : "";
+      return `<img src="${src}" data-markdown-src="${escapeHtml(token.href || "")}" alt="${escapeHtml(token.text || "")}"${title}>`;
+    };
+
+    return renderer;
+  }
+
+  function createHeadingSlugger() {
+    const counts = new Map();
+    return (value) => {
+      const plain = String(value || "")
+        .replace(/<[^>]*>/g, "")
+        .replace(/[*_`~[\]()]/g, "")
+        .trim()
+        .toLowerCase();
+      let base;
+      try {
+        base = plain.replace(/[^\p{L}\p{N}\s-]/gu, "").replace(/\s+/g, "-").replace(/-+/g, "-");
+      } catch (error) {
+        base = slugify(plain);
+      }
+      base = base.replace(/^-+|-+$/g, "");
+      if (!base) return "";
+
+      const count = counts.get(base) || 0;
+      counts.set(base, count + 1);
+      return count ? `${base}-${count}` : base;
+    };
+  }
+
+  function rewriteRenderedUrls(html) {
+    if (!document?.createElement) return html;
+    const template = document.createElement("template");
+    template.innerHTML = html;
+
+    template.content.querySelectorAll("a[href]").forEach((link) => {
+      link.setAttribute("href", resolveUrl(link.getAttribute("href")));
+      link.setAttribute("target", "_blank");
+      link.setAttribute("rel", "noreferrer noopener");
+    });
+    template.content.querySelectorAll("img[src]").forEach((image) => {
+      image.setAttribute("src", resolveUrl(image.getAttribute("src"), { image: true }));
+    });
+
+    return template.innerHTML;
+  }
+
   window.MDViewerMarkdown = {
-    render: parseBlocks,
+    render: renderMarkdown,
     escapeHtml
   };
 })();
