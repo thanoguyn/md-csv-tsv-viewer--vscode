@@ -1,20 +1,30 @@
 const vscode = require("vscode");
 const path = require("path");
+const { registerJsonlPreview } = require("./jsonlPreview");
+const { registerDelimitedRowPreview } = require("./tabularRowPreview");
 
 const VIEW_TYPE = "mdviewer.viewer";
+const JSONL_TABLE_VIEW_TYPE = "mdviewer.jsonlTableViewer";
 
 function activate(context) {
   const provider = new MdViewerEditorProvider(context);
+  const providerOptions = {
+    supportsMultipleEditorsPerDocument: true,
+    webviewOptions: {
+      retainContextWhenHidden: true
+    }
+  };
+
+  registerJsonlPreview(context);
+  registerDelimitedRowPreview(context);
 
   context.subscriptions.push(
-    vscode.window.registerCustomEditorProvider(VIEW_TYPE, provider, {
-      // Git diffs and split editors need two webview instances to coexist.
-      supportsMultipleEditorsPerDocument: true,
-      webviewOptions: {
-        retainContextWhenHidden: true
-      }
-    }),
+    vscode.window.registerCustomEditorProvider(VIEW_TYPE, provider, providerOptions),
+    vscode.window.registerCustomEditorProvider(JSONL_TABLE_VIEW_TYPE, provider, providerOptions),
     vscode.commands.registerCommand("mdviewer.openView", async (uri) => {
+      await openView(uri);
+    }),
+    vscode.commands.registerCommand("mdviewer.openTablePreview", async (uri) => {
       await openView(uri);
     }),
     vscode.commands.registerCommand("mdviewer.openEdit", async (uri) => {
@@ -30,7 +40,8 @@ async function openView(uri) {
     return;
   }
 
-  await vscode.commands.executeCommand("vscode.openWith", target, VIEW_TYPE, {
+  const viewType = /\.(jsonl|ndjson)$/i.test(target.path) ? JSONL_TABLE_VIEW_TYPE : VIEW_TYPE;
+  await vscode.commands.executeCommand("vscode.openWith", target, viewType, {
     preview: false,
     viewColumn: vscode.window.activeTextEditor?.viewColumn
   });
@@ -44,7 +55,7 @@ async function openEdit(uri, viewColumn) {
   }
 
   const document = await vscode.workspace.openTextDocument(target);
-  await vscode.window.showTextDocument(document, {
+  return vscode.window.showTextDocument(document, {
     preview: false,
     viewColumn: viewColumn || vscode.ViewColumn.Active
   });
@@ -113,6 +124,9 @@ class MdViewerEditorProvider {
     webviewPanel.webview.onDidReceiveMessage(async (message) => {
       if (message?.type === "openEdit") {
         await openEdit(document.uri, webviewPanel.viewColumn);
+      } else if (message?.type === "openJsonlPreview") {
+        await openEdit(document.uri, webviewPanel.viewColumn);
+        await vscode.commands.executeCommand("jsonlViewer.previewLine", document.uri);
       } else if (message?.type === "focusViewer") {
         webviewPanel.reveal(webviewPanel.viewColumn, false);
         await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
@@ -165,9 +179,10 @@ class MdViewerEditorProvider {
         </div>
         <div class="actions">
           <div class="mode-switch" role="radiogroup" aria-label="View mode">
-            <button id="modeViewer" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="true" data-tooltip="Viewer" data-shortcut="1 / ⌘/Ctrl+E in Edit">${toolbarIcon("eye")}</button>
-            <button id="modeRaw" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="false" data-tooltip="Open in VS Code text editor" data-shortcut="2 / E">${toolbarIcon("code")}</button>
-            <button id="modeWysiwyg" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="false" data-tooltip="WYSIWYG editor" data-shortcut="3">${toolbarIcon("edit")}</button>
+            <button id="modeViewer" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="true" data-mode="viewer" data-tooltip="Viewer" data-shortcut="1 / ⌘/Ctrl+E in Edit">${toolbarIcon("eye")}</button>
+            <button id="modeRaw" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="false" data-mode="external" data-tooltip="Open in VS Code text editor" data-shortcut="2 / E">${toolbarIcon("code")}</button>
+            <button id="modeTable" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="false" data-mode="table" data-tooltip="JSONL table view" data-shortcut="3" hidden>${toolbarIcon("grid")}</button>
+            <button id="modeWysiwyg" class="toolbar-icon-button mode-button" type="button" role="radio" aria-checked="false" data-mode="wysiwyg" data-tooltip="WYSIWYG editor" data-shortcut="3">${toolbarIcon("edit")}</button>
           </div>
           <span class="toolbar-divider" aria-hidden="true"></span>
           <button id="toggleFullWidth" class="toolbar-icon-button" type="button" aria-pressed="false" data-tooltip="Full width" data-shortcut="F">${toolbarIcon("expand")}</button>
@@ -183,6 +198,7 @@ class MdViewerEditorProvider {
 
       <main id="dropZone" class="workspace">
         <article id="preview" class="markdown-body" hidden></article>
+        <section id="jsonlView" class="jsonl-view" hidden></section>
         <section id="dataGrid" class="data-grid-view" hidden></section>
         <section id="wysiwygView" class="wysiwyg-view" hidden>
           <div class="wysiwyg-toolbar" role="toolbar" aria-label="Rich text formatting">
@@ -207,6 +223,7 @@ class MdViewerEditorProvider {
     <script nonce="${nonce}" src="${media("vendor", "markdown", "purify.min.js")}"></script>
     <script nonce="${nonce}" src="${media("markdown.js")}"></script>
     <script nonce="${nonce}" src="${media("tabular.js")}"></script>
+    <script nonce="${nonce}" src="${media("jsonl.js")}"></script>
     <script nonce="${nonce}" src="${media("vendor", "mermaid", "mermaid.min.js")}"></script>
     <script nonce="${nonce}" src="${media("markdownEnhancer.js")}"></script>
     <script nonce="${nonce}" src="${media("vscodeViewer.js")}"></script>
@@ -250,7 +267,8 @@ function toolbarIcon(name) {
     numbers: '<path d="M10 6h10M10 12h10M10 18h10M4 5h1v3M4 11h2l-2 3h2M4 17h2l-2 2h2"/>',
     link: '<path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"/>',
     style: '<path d="M4 20c2.8 0 4.5-1.2 4.5-3.5 0-1.4-1-2.5-2.5-2.5S3.5 15.2 3.5 17c0 1 .2 2 .5 3Z"/><path d="m8 14 8.8-8.8a2.1 2.1 0 0 1 3 3L11 17"/><path d="m14.5 7.5 3 3"/>',
-    print: '<path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M7 14h10v7H7Z"/><path d="M17 11h.01"/>'
+    print: '<path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M7 14h10v7H7Z"/><path d="M17 11h.01"/>',
+    grid: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>'
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${paths[name] || paths.help}</svg>`;
 }
@@ -358,6 +376,7 @@ function detectKind(source, languageId) {
 
   if (normalizedSource.endsWith(".csv") || normalizedLanguage === "csv") return "csv";
   if (normalizedSource.endsWith(".tsv") || normalizedLanguage === "tsv") return "tsv";
+  if (/\.(jsonl|ndjson)$/.test(normalizedSource) || normalizedLanguage === "jsonl" || normalizedLanguage === "ndjson") return "jsonl";
   if (/\.(md|markdown|mdown|mkd)$/.test(normalizedSource) || normalizedLanguage === "markdown") return "markdown";
   return "markdown";
 }

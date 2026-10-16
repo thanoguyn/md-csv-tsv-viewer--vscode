@@ -1,34 +1,35 @@
-# MD/CSV/TSV Viewer for VS Code
+# MD/CSV/TSV/JSONL Viewer for VS Code
 
-A VS Code extension to view and edit Markdown, CSV, and TSV files using a Viewer/WYSIWYG custom editor and Raw Edit via VS Code's default text editor.
+A VS Code extension for rendered Markdown, interactive CSV/TSV tables, and native-editor CSV/TSV/JSONL row previews.
 
 ## Supported File Formats
 
 - Markdown: `.md`, `.markdown`, `.mdown`, `.mkd`
 - Data Tables: `.csv`, `.tsv`
+- JSON Lines: `.jsonl`, `.ndjson`
 
-The above file formats are configured by default to open with `MD Viewer` via `workbench.editorAssociations`.
+Markdown, CSV, and TSV open with `MD Viewer`. JSONL and NDJSON deliberately open in VS Code's native code editor.
 
 ## Installation from VSIX
 
 1. Open VS Code.
 2. Run the command `Extensions: Install from VSIX...`.
-3. Select the `mdviewer-vscode-0.1.8.vsix` file.
+3. Select the `mdviewer-vscode-0.1.12.vsix` file.
 4. Reload VS Code if prompted.
 
-After installation, opening any supported file or using Quick Open will launch it in the default viewer.
+After installation, Markdown/CSV/TSV launch in the custom viewer while JSONL/NDJSON retain the normal VS Code editing interface.
 
-## Three Modes
+## Viewer Modes
 
-- `1` — Default Viewer.
+- `1` — Default Viewer; from JSONL Table Viewer, return to the native code editor and open Row Preview beside it.
 - `2`, `E`, or `S` — Raw Edit using VS Code's default text editor.
-- `3` — WYSIWYG editor for Markdown to edit rendered content directly.
+- `3` — WYSIWYG editor for Markdown, or Table view for JSONL/NDJSON.
 - All edits utilize VS Code's document model, maintaining dirty state, undo/redo history, and saving with `Cmd+S` / `Ctrl+S`.
 - You can always use the `Open as Text` command to switch back to VS Code's native text editor.
 
 ## General Features
 
-- Default viewer for Markdown, CSV, and TSV files.
+- Default viewer for Markdown, CSV, and TSV; JSONL/NDJSON use VS Code's native editor by default.
 - Toggle full width mode using the `Full width` button or the `F` key.
 - Icon-based toolbar; hover or focus to view feature titles and keyboard shortcuts.
 - Toggle light/dark theme using the theme button or the `M` key.
@@ -66,6 +67,9 @@ After installation, opening any supported file or using Quick Open will launch i
 ## CSV/TSV Viewer
 
 - CSV and TSV files open in an interactive grid view.
+- From the native text editor, click the `{}` editor-title button or press `Cmd/Ctrl+Alt+J` to open a JSONC Row Preview beside the source; moving the cursor updates it automatically.
+- The CSV/TSV Row Preview maps values to the first-row column names. The header row itself is previewed as an array.
+- Click the Table Viewer title button or press `Cmd/Ctrl+Alt+V` to reopen the full table as a normal tab in the current editor group.
 - Automatically parses file data into tables.
 - Toggle word wrap with `W`.
 - Toggle first row as header with `H`.
@@ -84,6 +88,20 @@ After installation, opening any supported file or using Quick Open will launch i
 - Grid context menu offers standard copy and US-formatted number copy.
 - Export tables directly to CSV or TSV.
 
+## JSONL/NDJSON Viewer
+
+- JSONL/NDJSON opens in VS Code's native code editor, matching the source extension's workflow.
+- Click the `{}` editor-title button or press `Cmd/Ctrl+Alt+J` to open a read-only, pretty-printed JSONC preview beside the source editor.
+- Click the Table Viewer title button or press `Cmd/Ctrl+Alt+V` to open the full JSONL table as a normal tab in the current editor group; `{}` remains dedicated to the active-row preview.
+- Moving the source cursor to another line updates the preview automatically after a short debounce.
+- Invalid or empty lines show a diagnostic comment and preserve the original source line.
+- Use `Cmd/Ctrl+Alt+]`, `Cmd/Ctrl+Alt+[`, or `JSONL: Preview Row by Number…` for explicit navigation.
+- Run `MD Viewer: Open in MD Viewer` when a full Table Viewer is needed; pressing `1` there returns to native code + side preview.
+- Table mode combines object keys into columns, flattens nested objects to dotted paths such as `user.name`, and preserves arrays as JSON cell values.
+- Invalid rows remain visible in Table mode through `$error` and `$raw` columns.
+- JSONL Table mode is intentionally read-only so editing cannot silently change JSON types or nested structure; Raw Edit remains available with `2`, `E`, or `S`.
+- The JSONL viewer is based on the row-preview approach from [austinulfers/jsonl-viewer](https://github.com/austinulfers/jsonl-viewer); its MIT license is included under `media/vendor/jsonl-viewer/`.
+
 ## Search
 
 - `Cmd+F` on macOS or `Ctrl+F` on Windows/Linux opens the search bar.
@@ -91,7 +109,15 @@ After installation, opening any supported file or using Quick Open will launch i
 - Press `Enter` to jump to the next match.
 - Press `Shift+Enter` to jump to the previous match.
 - Press `Escape` to close the search bar.
-- Search works in Markdown preview and CSV/TSV grid; Raw/WYSIWYG modes use native editor/webview search capabilities.
+- Search uses VS Code's native editor for JSONL source/row preview and works in Markdown plus the currently rendered CSV/TSV/JSONL table window.
+
+## Large data files
+
+- CSV, TSV, and JSONL tables automatically use virtual rows when `row count × column count > 20,000`.
+- Only the visible viewport plus 24 overscan rows on each side is present in the DOM; scrolling renders the next window on demand.
+- Selection and copy operations read from the full data model, including rows outside the rendered window.
+- Native JSONL Row Preview renders only the selected line. For files above VS Code's text-model limit, explicit Previous/Next/Go to Row commands stream the requested line directly from disk.
+- Table parsing, sorting, filtering, and exporting still operate on an in-memory model. Virtual rows avoid a huge DOM, but opening the optional Table Viewer still requires VS Code to expose the full text document.
 
 ## Export PDF
 
@@ -105,11 +131,14 @@ After installation, opening any supported file or using Quick Open will launch i
 
 | Shortcut | Description |
 | --- | --- |
-| `1` / `3` | Toggle Viewer / WYSIWYG editor |
+| `1` / `3` | Viewer / Markdown WYSIWYG or JSONL Table mode |
 | `Cmd+E` / `Ctrl+E` | Return from WYSIWYG Edit to Viewer |
 | `2` / `E` / `S` | Open Raw Edit using default VS Code editor |
 | `Cmd+Alt+V` | macOS: Reopen viewer from text editor |
 | `Ctrl+Alt+V` | Windows/Linux: Reopen viewer from text editor |
+| `Cmd/Ctrl+Alt+J` | Open CSV/TSV/JSONL Row Preview beside the native editor |
+| `Cmd/Ctrl+Alt+]` | Preview the next JSONL source row |
+| `Cmd/Ctrl+Alt+[` | Preview the previous JSONL source row |
 | `Cmd+F` / `Ctrl+F` | Open search bar |
 | `Enter` (in search) | Next search match |
 | `Shift+Enter` (in search) | Previous search match |
@@ -136,7 +165,13 @@ After installation, opening any supported file or using Quick Open will launch i
 | Command | Description |
 | --- | --- |
 | `MD Viewer: Open in MD Viewer` | Open current file using MD Viewer |
+| `MD Viewer: Open Table Viewer` | Open CSV/TSV/JSONL as a normal table tab |
+| `CSV/TSV: Preview Row` | Open/update the CSV/TSV Row Preview beside the native editor |
 | `MD Viewer: Open as Text` | Open current file using default text editor |
+| `JSONL: Preview Row` | Open/update the side preview for the cursor row |
+| `JSONL: Preview Next Row` | Step the preview to the next row |
+| `JSONL: Preview Previous Row` | Step the preview to the previous row |
+| `JSONL: Preview Row by Number…` | Jump the preview to a 1-based source row |
 
 ## Development
 

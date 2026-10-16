@@ -1,8 +1,8 @@
 {
     "name": "mdviewer-vscode",
-    "displayName": "MD/CSV/TSV Viewer",
-    "description": "Open Markdown, CSV, and TSV files in a viewer-first VS Code custom editor.",
-    "version": "0.1.10",
+    "displayName": "MD/CSV/TSV/JSONL Viewer",
+    "description": "View Markdown and tables, plus preview the active CSV/TSV/JSONL row beside VS Code's native editor.",
+    "version": "0.1.14",
     "publisher": "ThanOguyn",
     "license": "MIT",
     "engines": {
@@ -17,8 +17,15 @@
     ],
     "activationEvents": [
         "onCustomEditor:mdviewer.viewer",
+        "onCustomEditor:mdviewer.jsonlTableViewer",
         "onCommand:mdviewer.openView",
-        "onCommand:mdviewer.openEdit"
+        "onCommand:mdviewer.openTablePreview",
+        "onCommand:mdviewer.openEdit",
+        "onCommand:tabularViewer.previewRow",
+        "onCommand:jsonlViewer.previewLine",
+        "onCommand:jsonlViewer.previewNextRow",
+        "onCommand:jsonlViewer.previewPreviousRow",
+        "onCommand:jsonlViewer.previewGoToRow"
     ],
     "main": "./extension.js",
     "contributes": {
@@ -29,7 +36,9 @@
                 "*.mdown": "mdviewer.viewer",
                 "*.mkd": "mdviewer.viewer",
                 "*.csv": "mdviewer.viewer",
-                "*.tsv": "mdviewer.viewer"
+                "*.tsv": "mdviewer.viewer",
+                "*.jsonl": "default",
+                "*.ndjson": "default"
             },
             "workbench.diffEditorAssociations": {
                 "*.md": "default",
@@ -37,7 +46,9 @@
                 "*.mdown": "default",
                 "*.mkd": "default",
                 "*.csv": "default",
-                "*.tsv": "default"
+                "*.tsv": "default",
+                "*.jsonl": "default",
+                "*.ndjson": "default"
             }
         },
         "commands": [
@@ -52,6 +63,47 @@
                 "title": "Open as Text",
                 "category": "MD Viewer",
                 "icon": "$(edit)"
+            },
+            {
+                "command": "mdviewer.openTablePreview",
+                "title": "Open Table Viewer",
+                "category": "MD Viewer",
+                "icon": "$(table)"
+            },
+            {
+                "command": "tabularViewer.previewRow",
+                "title": "Preview Row",
+                "category": "CSV/TSV",
+                "icon": "$(json)",
+                "enablement": "resourceExtname =~ /\\.(csv|tsv)$/ || editorLangId == csv || editorLangId == tsv"
+            },
+            {
+                "command": "jsonlViewer.previewLine",
+                "title": "Preview Row",
+                "category": "JSONL",
+                "icon": "$(json)",
+                "enablement": "resourceExtname =~ /\\.(jsonl|ndjson)$/ || editorLangId == jsonl"
+            },
+            {
+                "command": "jsonlViewer.previewNextRow",
+                "title": "Preview Next Row",
+                "category": "JSONL",
+                "icon": "$(arrow-down)",
+                "enablement": "jsonlViewer.previewActive"
+            },
+            {
+                "command": "jsonlViewer.previewPreviousRow",
+                "title": "Preview Previous Row",
+                "category": "JSONL",
+                "icon": "$(arrow-up)",
+                "enablement": "jsonlViewer.previewActive"
+            },
+            {
+                "command": "jsonlViewer.previewGoToRow",
+                "title": "Preview Row by Number…",
+                "category": "JSONL",
+                "icon": "$(go-to-file)",
+                "enablement": "jsonlViewer.previewActive || resourceExtname =~ /\\.(jsonl|ndjson)$/ || editorLangId == jsonl"
             }
         ],
         "customEditors": [
@@ -79,6 +131,19 @@
                     }
                 ],
                 "priority": "default"
+            },
+            {
+                "viewType": "mdviewer.jsonlTableViewer",
+                "displayName": "JSONL Table Viewer",
+                "selector": [
+                    {
+                        "filenamePattern": "*.jsonl"
+                    },
+                    {
+                        "filenamePattern": "*.ndjson"
+                    }
+                ],
+                "priority": "option"
             }
         ],
         "keybindings": [
@@ -86,28 +151,115 @@
                 "command": "mdviewer.openView",
                 "key": "ctrl+alt+v",
                 "mac": "cmd+alt+v",
-                "when": "editorTextFocus && resourceExtname =~ /\\.(md|markdown|mdown|mkd|csv|tsv)$/"
+                "when": "editorTextFocus && resourceExtname =~ /\\.(md|markdown|mdown|mkd|csv|tsv|jsonl|ndjson)$/"
+            },
+            {
+                "command": "jsonlViewer.previewLine",
+                "key": "ctrl+alt+j",
+                "mac": "cmd+alt+j",
+                "when": "editorTextFocus && (resourceExtname =~ /\\.(jsonl|ndjson)$/ || editorLangId == jsonl)"
+            },
+            {
+                "command": "tabularViewer.previewRow",
+                "key": "ctrl+alt+j",
+                "mac": "cmd+alt+j",
+                "when": "editorTextFocus && (resourceExtname =~ /\\.(csv|tsv)$/ || editorLangId == csv || editorLangId == tsv)"
+            },
+            {
+                "command": "jsonlViewer.previewNextRow",
+                "key": "ctrl+alt+]",
+                "mac": "cmd+alt+]",
+                "when": "jsonlViewer.previewActive"
+            },
+            {
+                "command": "jsonlViewer.previewPreviousRow",
+                "key": "ctrl+alt+[",
+                "mac": "cmd+alt+[",
+                "when": "jsonlViewer.previewActive"
             }
         ],
         "menus": {
             "editor/title": [
                 {
                     "command": "mdviewer.openView",
-                    "when": "resourceExtname =~ /\\.(md|markdown|mdown|mkd|csv|tsv)$/",
+                    "when": "resourceExtname =~ /\\.(md|markdown|mdown|mkd)$/",
                     "group": "navigation@1"
                 },
                 {
+                    "command": "tabularViewer.previewRow",
+                    "when": "(resourceExtname =~ /\\.(csv|tsv)$/ || editorLangId == csv || editorLangId == tsv) && activeCustomEditorId != 'mdviewer.viewer'",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "jsonlViewer.previewLine",
+                    "when": "resourceExtname =~ /\\.(jsonl|ndjson)$/ || editorLangId == jsonl",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "mdviewer.openTablePreview",
+                    "when": "resourceExtname =~ /\\.(csv|tsv|jsonl|ndjson)$/ && activeCustomEditorId != 'mdviewer.viewer' && activeCustomEditorId != 'mdviewer.jsonlTableViewer'",
+                    "group": "navigation@2"
+                },
+                {
                     "command": "mdviewer.openEdit",
-                    "when": "activeCustomEditorId == 'mdviewer.viewer'",
+                    "when": "activeCustomEditorId == 'mdviewer.viewer' || activeCustomEditorId == 'mdviewer.jsonlTableViewer'",
                     "group": "navigation@1"
                 }
+            ],
+            "editor/context": [
+                {
+                    "command": "mdviewer.openTablePreview",
+                    "when": "resourceExtname =~ /\\.(csv|tsv|jsonl|ndjson)$/ && activeCustomEditorId != 'mdviewer.viewer' && activeCustomEditorId != 'mdviewer.jsonlTableViewer'",
+                    "group": "1_jsonlviewer@0"
+                },
+                {
+                    "command": "tabularViewer.previewRow",
+                    "when": "resourceExtname =~ /\\.(csv|tsv)$/ || editorLangId == csv || editorLangId == tsv",
+                    "group": "1_jsonlviewer@1"
+                },
+                {
+                    "command": "jsonlViewer.previewLine",
+                    "when": "resourceExtname =~ /\\.(jsonl|ndjson)$/ || editorLangId == jsonl",
+                    "group": "1_jsonlviewer@1"
+                },
+                {
+                    "command": "jsonlViewer.previewGoToRow",
+                    "when": "resourceExtname =~ /\\.(jsonl|ndjson)$/ || editorLangId == jsonl",
+                    "group": "1_jsonlviewer@2"
+                },
+                {
+                    "command": "jsonlViewer.previewNextRow",
+                    "when": "jsonlViewer.previewActive && (resourceExtname =~ /\\.(jsonl|ndjson)$/ || editorLangId == jsonl)",
+                    "group": "1_jsonlviewer@3"
+                },
+                {
+                    "command": "jsonlViewer.previewPreviousRow",
+                    "when": "jsonlViewer.previewActive && (resourceExtname =~ /\\.(jsonl|ndjson)$/ || editorLangId == jsonl)",
+                    "group": "1_jsonlviewer@4"
+                }
             ]
+        },
+        "configuration": {
+            "title": "MD/CSV/TSV/JSONL Viewer",
+            "properties": {
+                "tabularViewer.followCursor": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Automatically update the side preview when the cursor moves between CSV/TSV rows."
+                },
+                "jsonlViewer.followCursor": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Automatically update the side preview when the cursor moves between JSONL rows."
+                }
+            }
         }
     },
     "scripts": {
-        "lint": "node --check extension.js && node --check media/vscodeViewer.js && node --check media/markdown.js && node --check media/markdownEnhancer.js && node --check media/tabular.js",
-        "package": "rm -f mdviewer-vscode-*.vsix && vsce package --allow-missing-repository",
-        "publish": "vsce publish --allow-missing-repository",
+        "lint": "node --check extension.js && node --check jsonlPreview.js && node --check jsonlPreviewCore.js && node --check tabularRowPreview.js && node --check tabularRowPreviewCore.js && node --check media/vscodeViewer.js && node --check media/markdown.js && node --check media/markdownEnhancer.js && node --check media/tabular.js && node --check media/jsonl.js",
+        "test": "node --test test/*.test.js",
+        "package": "rm -f mdviewer-vscode-*.vsix && vsce package",
+        "publish": "vsce publish",
         "local": "NODE_NO_WARNINGS=1 devin-desktop --install-extension mdviewer-vscode-${npm_package_version}.vsix",
         "code": "NODE_NO_WARNINGS=1 code --install-extension mdviewer-vscode-${npm_package_version}.vsix",
         "agy": "NODE_NO_WARNINGS=1 agy-ide --install-extension mdviewer-vscode-${npm_package_version}.vsix",

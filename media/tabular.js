@@ -11,6 +11,9 @@
   const maxFitColumnWidth = 420;
   const maxLayoutColumnWidth = 640;
   const rowHeaderWidth = 48;
+  const virtualCellThreshold = 20000;
+  const virtualRowHeight = 36;
+  const virtualRowOverscan = 24;
   let activeGrid = null;
   let activeMarkdownTable = null;
   let hoveredMarkdownTable = null;
@@ -33,6 +36,7 @@
 
     if (normalizedSource.endsWith(".csv") || normalizedType.includes("text/csv")) return "csv";
     if (normalizedSource.endsWith(".tsv") || normalizedType.includes("text/tab-separated-values")) return "tsv";
+    if (/\.(jsonl|ndjson)$/.test(normalizedSource) || normalizedType.includes("jsonl") || normalizedType.includes("ndjson")) return "jsonl";
     if (/\.(md|markdown|mdown|mkd)$/.test(normalizedSource) || normalizedType.includes("text/markdown")) return "markdown";
     return "markdown";
   }
@@ -249,6 +253,8 @@
     wrapButton.className = "wrap-toggle-input";
     setTableIconButton(wrapButton, "wrap", "Wrap cell text", "W");
     wrapButton.setAttribute("aria-pressed", String(getWrapState()));
+    wrapButton.disabled = shouldVirtualizeGrid(activeGrid.rows.length, activeGrid.columns.length);
+    if (wrapButton.disabled) wrapButton.title = "Wrapping is disabled for virtualized large tables.";
     wrapButton.addEventListener("click", () => {
       const enabled = !getWrapState();
       setWrapState(enabled);
@@ -279,7 +285,7 @@
     headerButton.type = "button";
     headerButton.className = "header-row-toggle";
     updateHeaderButton(headerButton);
-    headerButton.disabled = activeGrid.kind === "markdown-table";
+    headerButton.disabled = activeGrid.kind === "markdown-table" || activeGrid.kind === "jsonl";
     headerButton.addEventListener("click", () => {
       updateHeaderButton(headerButton, toggleHeaderRow(container));
     });
@@ -322,6 +328,7 @@
 
     const scroller = document.createElement("div");
     scroller.className = "grid-scroll";
+    scroller.addEventListener("scroll", () => scheduleVirtualGridRender(container), { passive: true });
 
     const table = document.createElement("table");
     table.className = "data-grid";
@@ -560,17 +567,66 @@
     const scrollTop = scroller?.scrollTop || 0;
     const scrollLeft = scroller?.scrollLeft || 0;
     const visibleRows = getVisibleRows();
+    activeGrid.visibleRows = visibleRows;
+    activeGrid.virtualized = shouldVirtualizeGrid(activeGrid.rows.length, activeGrid.columns.length);
+    activeGrid.virtualStart = -1;
+    activeGrid.virtualEnd = -1;
 
     table.innerHTML = "";
     table.appendChild(renderColGroup());
-    table.append(renderGridHead(container), renderGridBody(visibleRows));
+    table.append(renderGridHead(container), renderGridBodyWindow(visibleRows, scroller));
+    table.classList.toggle("is-virtualized", activeGrid.virtualized);
     applyGridTableWidth(table);
-    summary.textContent = `${visibleRows.length} of ${activeGrid.rows.length} rows x ${activeGrid.columns.length} columns`;
+    summary.textContent = `${visibleRows.length} of ${activeGrid.rows.length} rows x ${activeGrid.columns.length} columns${activeGrid.virtualized ? " · virtual rows" : ""}`;
     paintSelection(container);
     if (scroller) {
       scroller.scrollTop = scrollTop;
       scroller.scrollLeft = scrollLeft;
     }
+  }
+
+  function shouldVirtualizeGrid(rowCount, columnCount) {
+    return rowCount * columnCount > virtualCellThreshold;
+  }
+
+  function scheduleVirtualGridRender(container) {
+    if (!activeGrid?.virtualized || activeGrid.container !== container || activeGrid.virtualFrame) return;
+    activeGrid.virtualFrame = requestAnimationFrame(() => {
+      activeGrid.virtualFrame = null;
+      renderVirtualGridWindow(container);
+    });
+  }
+
+  function renderVirtualGridWindow(container) {
+    if (!activeGrid?.virtualized || activeGrid.container !== container) return;
+    const table = container.querySelector(".data-grid");
+    const scroller = container.querySelector(".grid-scroll");
+    const rows = activeGrid.visibleRows || getVisibleRows();
+    const range = virtualGridRange(rows.length, scroller);
+    if (range.start === activeGrid.virtualStart && range.end === activeGrid.virtualEnd) return;
+    table.querySelector("tbody")?.replaceWith(renderGridBody(rows, range.start, range.end));
+    activeGrid.virtualStart = range.start;
+    activeGrid.virtualEnd = range.end;
+    paintSelection(container);
+  }
+
+  function renderGridBodyWindow(rows, scroller) {
+    if (!activeGrid.virtualized) return renderGridBody(rows, 0, rows.length);
+    const range = virtualGridRange(rows.length, scroller);
+    activeGrid.virtualStart = range.start;
+    activeGrid.virtualEnd = range.end;
+    return renderGridBody(rows, range.start, range.end);
+  }
+
+  function virtualGridRange(rowCount, scroller) {
+    if (!activeGrid?.virtualized) return { start: 0, end: rowCount };
+    const viewportRows = Math.ceil((scroller?.clientHeight || 600) / virtualRowHeight);
+    const first = Math.max(0, Math.floor((scroller?.scrollTop || 0) / virtualRowHeight));
+    const start = Math.min(Math.max(0, first - virtualRowOverscan), Math.max(0, rowCount - 1));
+    return {
+      start,
+      end: Math.min(rowCount, first + viewportRows + virtualRowOverscan)
+    };
   }
 
   function renderColGroup() {
@@ -751,10 +807,15 @@
     return thead;
   }
 
-  function renderGridBody(rows) {
+  function renderGridBody(rows, startIndex = 0, endIndex = rows.length) {
     const tbody = document.createElement("tbody");
 
-    rows.forEach((row, rowIndex) => {
+    if (activeGrid.virtualized && startIndex > 0) {
+      tbody.appendChild(renderVirtualSpacer(startIndex * virtualRowHeight));
+    }
+
+    rows.slice(startIndex, endIndex).forEach((row, windowIndex) => {
+      const rowIndex = startIndex + windowIndex;
       const tr = document.createElement("tr");
       tr.dataset.visibleRow = String(rowIndex);
       tr.dataset.sourceRow = String(row.sourceIndex);
@@ -783,14 +844,30 @@
       tbody.appendChild(tr);
     });
 
+    if (activeGrid.virtualized && endIndex < rows.length) {
+      tbody.appendChild(renderVirtualSpacer((rows.length - endIndex) * virtualRowHeight));
+    }
+
     return tbody;
+  }
+
+  function renderVirtualSpacer(height) {
+    const row = document.createElement("tr");
+    row.className = "grid-virtual-spacer";
+    const cell = document.createElement("td");
+    cell.colSpan = activeGrid.columns.length + 1;
+    cell.style.height = `${height}px`;
+    row.appendChild(cell);
+    return row;
   }
 
   function getVisibleRows() {
     const filters = Object.entries(activeGrid.filters).filter(([, value]) => value.trim());
-    let rows = activeGrid.rows.filter((row) =>
-      filters.every(([column, value]) => matchesFilter(row.cells[Number(column)] || "", value, Number(column)))
-    );
+    let rows = filters.length
+      ? activeGrid.rows.filter((row) =>
+        filters.every(([column, value]) => matchesFilter(row.cells[Number(column)] || "", value, Number(column)))
+      )
+      : activeGrid.rows;
 
     if (activeGrid.sorts.length) {
       rows = [...rows].sort((left, right) => {
@@ -1212,11 +1289,18 @@
     rebuildGridAfterStructure(container, { row: 0, column: columnIndex });
   }
 
-  function deleteGridColumn(container, columnIndex) {
+  function deleteGridColumns(container, columnIndices) {
     if (!activeGrid?.editable) return;
-    if (activeGrid.columns.length <= 1) return;
-    activeGrid.sourceRows.forEach((row) => row.splice(columnIndex, 1));
-    rebuildGridAfterStructure(container, { row: 0, column: Math.min(columnIndex, activeGrid.columns.length - 2) });
+    const columns = normalizedGridIndices(columnIndices, activeGrid.columns.length);
+    if (!columns.length || columns.length >= activeGrid.columns.length) return;
+
+    [...columns].reverse().forEach((columnIndex) => {
+      activeGrid.sourceRows.forEach((row) => row.splice(columnIndex, 1));
+    });
+    rebuildGridAfterStructure(container, {
+      row: 0,
+      column: Math.min(columns[0], activeGrid.columns.length - columns.length - 1)
+    });
   }
 
   function insertGridRow(container, visibleRowIndex, after) {
@@ -1229,16 +1313,50 @@
     rebuildGridAfterStructure(container, { row: bodyIndex, column: 0 });
   }
 
-  function deleteGridRow(container, visibleRowIndex) {
+  function deleteGridRows(container, sourceRowIndices) {
     if (!activeGrid?.editable || !activeGrid.rows.length) return;
-    const target = getVisibleRows()[visibleRowIndex];
-    if (!target) return;
-    const rawIndex = target.sourceIndex + (activeGrid.headerEnabled ? 1 : 0);
-    activeGrid.sourceRows.splice(rawIndex, 1);
+    const rows = normalizedGridIndices(sourceRowIndices, activeGrid.rows.length);
+    if (!rows.length) return;
+
+    [...rows].reverse().forEach((sourceRowIndex) => {
+      const rawIndex = sourceRowIndex + (activeGrid.headerEnabled ? 1 : 0);
+      activeGrid.sourceRows.splice(rawIndex, 1);
+    });
     rebuildGridAfterStructure(container, {
-      row: Math.min(target.sourceIndex, Math.max(0, activeGrid.rows.length - 2)),
+      row: Math.min(rows[0], Math.max(0, activeGrid.rows.length - rows.length - 1)),
       column: 0
     });
+  }
+
+  function normalizedGridIndices(indices, length) {
+    return [...new Set(indices)]
+      .filter((index) => Number.isInteger(index) && index >= 0 && index < length)
+      .sort((left, right) => left - right);
+  }
+
+  function selectedGridColumnIndices(fallbackColumnIndex) {
+    const columns = [];
+    normalizedSelections().forEach(({ startColumn, endColumn }) => {
+      for (let column = startColumn; column <= endColumn; column += 1) columns.push(column);
+    });
+    if (!columns.length && Number.isInteger(fallbackColumnIndex)) columns.push(fallbackColumnIndex);
+    return normalizedGridIndices(columns, activeGrid.columns.length);
+  }
+
+  function selectedGridSourceRowIndices(fallbackVisibleRowIndex) {
+    const visibleRows = getVisibleRows();
+    const sourceRows = [];
+    normalizedSelections().forEach(({ startRow, endRow }) => {
+      for (let row = startRow; row <= endRow; row += 1) {
+        const sourceIndex = visibleRows[row]?.sourceIndex;
+        if (Number.isInteger(sourceIndex)) sourceRows.push(sourceIndex);
+      }
+    });
+    if (!sourceRows.length && Number.isInteger(fallbackVisibleRowIndex)) {
+      const sourceIndex = visibleRows[fallbackVisibleRowIndex]?.sourceIndex;
+      if (Number.isInteger(sourceIndex)) sourceRows.push(sourceIndex);
+    }
+    return normalizedGridIndices(sourceRows, activeGrid.rows.length);
   }
 
   function uniqueColumnName(base) {
@@ -1404,7 +1522,9 @@
       }
     } else if (columnHeader) {
       columnIndex = Number(columnHeader.dataset.column);
-      selectColumn(container, columnIndex);
+      if (!isColumnSelected(columnIndex)) {
+        selectColumn(container, columnIndex);
+      }
     } else if (rowHeader) {
       const row = Number(rowHeader.dataset.row);
       visibleRowIndex = row;
@@ -1732,22 +1852,30 @@
     }
 
     if (isGridSelection && activeGrid.editable && Number.isInteger(columnIndex)) {
+      const selectedColumns = selectedGridColumnIndices(columnIndex);
       const separator = document.createElement("div");
       separator.className = "grid-context-separator";
       const addBefore = gridContextActionButton("Add column before", () => insertGridColumn(container, columnIndex));
       const addAfter = gridContextActionButton("Add column after", () => insertGridColumn(container, columnIndex + 1));
-      const remove = gridContextActionButton("Delete column", () => deleteGridColumn(container, columnIndex));
+      const remove = gridContextActionButton(
+        selectedColumns.length === 1 ? "Delete column" : `Delete ${selectedColumns.length} columns`,
+        () => deleteGridColumns(container, selectedColumns)
+      );
       remove.classList.add("is-danger");
-      remove.disabled = activeGrid.columns.length <= 1;
+      remove.disabled = selectedColumns.length >= activeGrid.columns.length;
       menu.append(separator, addBefore, addAfter, remove);
     }
 
     if (isGridSelection && activeGrid.editable && Number.isInteger(visibleRowIndex)) {
+      const selectedRows = selectedGridSourceRowIndices(visibleRowIndex);
       const separator = document.createElement("div");
       separator.className = "grid-context-separator";
       const addBefore = gridContextActionButton("Insert row above", () => insertGridRow(container, visibleRowIndex, false));
       const addAfter = gridContextActionButton("Insert row below", () => insertGridRow(container, visibleRowIndex, true));
-      const remove = gridContextActionButton("Delete row", () => deleteGridRow(container, visibleRowIndex));
+      const remove = gridContextActionButton(
+        selectedRows.length === 1 ? "Delete row" : `Delete ${selectedRows.length} rows`,
+        () => deleteGridRows(container, selectedRows)
+      );
       remove.classList.add("is-danger");
       menu.append(separator, addBefore, addAfter, remove);
     }
@@ -1852,6 +1980,7 @@
   }
 
   function selectedGridText(container, options = {}) {
+    const visibleRows = activeGrid.visibleRows || getVisibleRows();
     const selections = normalizedSelections().sort((left, right) => (
       left.startRow - right.startRow || left.startColumn - right.startColumn
     ));
@@ -1865,7 +1994,7 @@
         const cells = [];
         selections.forEach(({ startColumn, endColumn }) => {
           for (let column = startColumn; column <= endColumn; column += 1) {
-            const value = container.querySelector(`td[data-row="${row}"][data-column="${column}"]`)?.textContent || "";
+            const value = visibleRows[row]?.cells[column] || "";
             cells.push(options.normalizeNumbers ? normalizeCellForUsCopy(value, column) : value);
           }
         });
@@ -1879,7 +2008,7 @@
       for (let row = startRow; row <= endRow; row += 1) {
         const cells = [];
         for (let column = startColumn; column <= endColumn; column += 1) {
-          const value = container.querySelector(`td[data-row="${row}"][data-column="${column}"]`)?.textContent || "";
+          const value = visibleRows[row]?.cells[column] || "";
           cells.push(options.normalizeNumbers ? normalizeCellForUsCopy(value, column) : value);
         }
         rows.push(cells.join("\t"));
@@ -1932,9 +2061,16 @@
     );
   }
 
+  function isColumnSelected(column) {
+    const lastRow = Math.max(0, getVisibleRows().length - 1);
+    return normalizedSelections().some(({ startRow, endRow, startColumn, endColumn }) =>
+      column >= startColumn && column <= endColumn && startRow === 0 && endRow === lastRow
+    );
+  }
+
   function visibleGridText(container) {
-    return Array.from(container.querySelectorAll("tbody tr"))
-      .map((row) => Array.from(row.querySelectorAll("td")).map((cell) => cell.textContent).join("\t"))
+    return (activeGrid.visibleRows || getVisibleRows())
+      .map((row) => row.cells.join("\t"))
       .join("\n");
   }
 
@@ -2192,7 +2328,14 @@
   function normalizeRows(rows) {
     if (!rows.length) return [];
     const columnCount = Math.max(...rows.map((row) => row.length));
-    return rows.map((row) => Array.from({ length: columnCount }, (_, index) => row[index] || ""));
+    return rows.map((row) => {
+      const normalized = Array.isArray(row) ? row : Array.from(row || []);
+      while (normalized.length < columnCount) normalized.push("");
+      for (let index = 0; index < normalized.length; index += 1) {
+        if (normalized[index] === null || normalized[index] === undefined) normalized[index] = "";
+      }
+      return normalized;
+    });
   }
 
   function gridModelFromSourceRows(sourceRows, headerEnabled, numberFormat) {
@@ -2201,7 +2344,7 @@
       ? sourceRows[0]
       : Array.from({ length: columnCount }, (_, index) => excelColumnName(index));
     const bodyRows = headerEnabled ? sourceRows.slice(1) : sourceRows;
-    const widthRows = [columns, ...bodyRows];
+    const widthRows = headerEnabled ? sourceRows : [columns, ...bodyRows];
     const columnMeta = detectGridColumnMeta(widthRows, numberFormat);
 
     return {

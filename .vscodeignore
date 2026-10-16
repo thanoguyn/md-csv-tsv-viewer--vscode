@@ -2,5 +2,11 @@
 .git/**
 .gitignore
 node_modules/**
+test/**
+*.jsonl
+*.ndjson
+*.csv
+*.tsv
 *.vsix
 npm-debug.log
+.env

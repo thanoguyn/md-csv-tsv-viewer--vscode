@@ -3,6 +3,7 @@
   const viewerScriptSrc = document.currentScript?.src || "";
   const vscode = acquireVsCodeApi();
   const preview = document.getElementById("preview");
+  const jsonlView = document.getElementById("jsonlView");
   const dataGrid = document.getElementById("dataGrid");
   const wysiwygView = document.getElementById("wysiwygView");
   const wysiwygEditor = document.getElementById("wysiwygEditor");
@@ -17,6 +18,7 @@
   const modeButtons = Array.from(document.querySelectorAll(".mode-button"));
   const modeViewer = document.getElementById("modeViewer");
   const modeRaw = document.getElementById("modeRaw");
+  const modeTable = document.getElementById("modeTable");
   const modeWysiwyg = document.getElementById("modeWysiwyg");
   const downloadDocument = document.getElementById("downloadDocument");
   const downloadPdf = document.getElementById("downloadPdf");
@@ -38,7 +40,9 @@
     readonly: false,
     text: ""
   };
-  let currentMode = localStorage.getItem(modeStorageKey) === "wysiwyg" ? "wysiwyg" : "viewer";
+  const savedMode = localStorage.getItem(modeStorageKey);
+  let currentMode = savedMode === "wysiwyg" || savedMode === "table" ? savedMode : "viewer";
+  let jsonlModeInitialized = false;
   let editTimer = null;
   let renderingWysiwyg = false;
   let markdownAllSelected = false;
@@ -86,6 +90,8 @@
       text
     });
   };
+  window.__mdViewerCopyText = copyText;
+  window.__mdViewerShowToast = showToast;
   window.__mdViewerDocumentEdit = (text) => flushDocumentEdit(text);
   window.__mdViewerCanEditDocument = () => !currentDocument.readonly;
   window.__mdViewerShowSelectionStats = showSelectionStatsToast;
@@ -145,6 +151,7 @@
 
   modeViewer.addEventListener("click", () => setMode("viewer"));
   modeRaw.addEventListener("click", () => setMode("raw"));
+  modeTable.addEventListener("click", () => setMode("table"));
   modeWysiwyg.addEventListener("click", () => setMode("wysiwyg"));
 
   toggleFullWidth.addEventListener("click", () => {
@@ -202,31 +209,61 @@
   function renderCurrentDocument() {
     const { kind, meta, text } = currentDocument;
     const isDelimited = kind === "csv" || kind === "tsv";
-    if (isDelimited && currentMode === "wysiwyg") currentMode = "viewer";
-    const isWysiwyg = currentMode === "wysiwyg" && !isDelimited;
+    const isJsonl = kind === "jsonl";
+    if (isJsonl && !jsonlModeInitialized) {
+      currentMode = "table";
+      jsonlModeInitialized = true;
+    }
+    if (currentMode === "wysiwyg" && kind !== "markdown") currentMode = "viewer";
+    if (currentMode === "table" && !isJsonl) currentMode = "viewer";
+    const isJsonlTable = isJsonl && currentMode === "table";
+    const isWysiwyg = currentMode === "wysiwyg" && kind === "markdown";
     window.MDViewerTabular.clearMarkdownTableSelection?.();
-    toggleFullWidth.disabled = isDelimited;
-    toggleToc.disabled = isDelimited || isWysiwyg;
-    toggleGithubStyle.disabled = isDelimited;
-    modeWysiwyg.disabled = isDelimited;
+    toggleFullWidth.disabled = isDelimited || isJsonl;
+    toggleToc.disabled = kind !== "markdown" || isWysiwyg;
+    toggleGithubStyle.disabled = kind !== "markdown";
+    modeTable.hidden = !isJsonl;
+    modeWysiwyg.hidden = isJsonl;
+    modeWysiwyg.disabled = kind !== "markdown";
     wysiwygEditor.contentEditable = String(!currentDocument.readonly);
     document.querySelectorAll(".wysiwyg-toolbar button").forEach((button) => {
       button.disabled = currentDocument.readonly;
     });
     syncModeControls();
+    modeViewer.dataset.tooltip = isJsonl ? "Open code editor with row preview" : "Viewer";
+    modeViewer.setAttribute("aria-label", isJsonl ? "Open code editor with row preview (1)" : "Viewer (1)");
 
-    if (isDelimited) {
+    if (isDelimited || isJsonlTable) {
       window.MDViewerMarkdownEnhancer.clearToc();
       wysiwygView.hidden = true;
       preview.hidden = true;
       preview.innerHTML = "";
+      jsonlView.hidden = true;
+      jsonlView.innerHTML = "";
       dataGrid.hidden = false;
-      window.MDViewerTabular.renderDataGrid(dataGrid, text, kind, { editable: !currentDocument.readonly });
+      if (isJsonlTable) {
+        const rows = window.MDViewerJsonl.jsonlTableRows(text);
+        window.MDViewerTabular.renderDataGridRows(dataGrid, rows, { editable: false, kind: "jsonl" });
+      } else {
+        window.MDViewerTabular.renderDataGrid(dataGrid, text, kind, { editable: !currentDocument.readonly });
+      }
+    } else if (isJsonl) {
+      window.MDViewerMarkdownEnhancer.clearToc();
+      window.MDViewerTabular.clearActiveGrid();
+      wysiwygView.hidden = true;
+      preview.hidden = true;
+      preview.innerHTML = "";
+      dataGrid.hidden = true;
+      dataGrid.innerHTML = "";
+      jsonlView.hidden = false;
+      window.MDViewerJsonl.renderJsonlViewer(jsonlView, text, { filename: currentDocument.filename });
     } else if (isWysiwyg) {
       window.MDViewerMarkdownEnhancer.clearToc();
       window.MDViewerTabular.clearActiveGrid();
       preview.hidden = true;
       preview.innerHTML = "";
+      jsonlView.hidden = true;
+      jsonlView.innerHTML = "";
       dataGrid.hidden = true;
       dataGrid.innerHTML = "";
       wysiwygView.hidden = false;
@@ -244,6 +281,8 @@
       wysiwygView.hidden = true;
       const hasOpenMarkdownGrid = window.MDViewerTabular.hasOpenMarkdownTableGrid?.();
       if (!hasOpenMarkdownGrid) window.MDViewerTabular.clearActiveGrid();
+      jsonlView.hidden = true;
+      jsonlView.innerHTML = "";
       dataGrid.hidden = true;
       dataGrid.innerHTML = "";
       preview.innerHTML = window.MDViewerMarkdown.render(text);
@@ -254,10 +293,10 @@
     }
 
     syncWrapState();
-    dropZone.classList.toggle("is-data-mode", isDelimited || isWysiwyg);
+    dropZone.classList.toggle("is-data-mode", isDelimited || isJsonl || isWysiwyg);
     dropZone.classList.remove("is-source-mode");
     dropZone.classList.toggle("is-wysiwyg-mode", isWysiwyg);
-    document.body.classList.toggle("has-grid-view", isDelimited || isWysiwyg);
+    document.body.classList.toggle("has-grid-view", isDelimited || isJsonl || isWysiwyg);
     documentMeta.textContent = meta;
     document.title = currentDocument.filename ? `MD Viewer - ${currentDocument.filename}` : "MD Viewer";
     hideSelectionContextMenu();
@@ -269,6 +308,10 @@
   }
 
   function setMode(mode) {
+    if (mode === "viewer" && currentDocument.kind === "jsonl") {
+      vscode.postMessage({ type: "openJsonlPreview" });
+      return;
+    }
     if (mode === "raw") {
       if (editTimer) flushWysiwygDocumentEdit();
       currentMode = "viewer";
@@ -280,6 +323,10 @@
       showToast("WYSIWYG is available for Markdown", { tone: "warning" });
       return;
     }
+    if (mode === "table" && currentDocument.kind !== "jsonl") {
+      showToast("Table mode is available for JSONL/NDJSON", { tone: "warning" });
+      return;
+    }
     if (editTimer) flushWysiwygDocumentEdit();
     currentMode = mode;
     localStorage.setItem(modeStorageKey, mode);
@@ -289,7 +336,7 @@
 
   function syncModeControls() {
     modeButtons.forEach((button) => {
-      const mode = button === modeViewer ? "viewer" : button === modeRaw ? "external" : "wysiwyg";
+      const mode = button.dataset.mode;
       button.setAttribute("aria-checked", String(currentMode === mode));
       button.classList.toggle("is-active", currentMode === mode);
     });
@@ -579,7 +626,7 @@
 
     if (!commandOrControl && !event.altKey && !event.shiftKey && !inTextInput && /^[123]$/.test(key)) {
       event.preventDefault();
-      setMode(key === "1" ? "viewer" : key === "2" ? "raw" : "wysiwyg");
+      setMode(key === "1" ? "viewer" : key === "2" ? "raw" : currentDocument.kind === "jsonl" ? "table" : "wysiwyg");
       return;
     }
 
@@ -726,6 +773,7 @@
   function currentRenderedText() {
     if (!dataGrid.hidden) return window.MDViewerTabular.getActiveGridText({ includeHeader: true });
     if (!wysiwygView.hidden) return wysiwygEditor.innerText;
+    if (!jsonlView.hidden) return window.MDViewerJsonl.getActivePreviewText();
     if (!preview.hidden) return viewerContentText(preview);
     return "";
   }
@@ -735,7 +783,11 @@
     if (!dataGrid.hidden && window.MDViewerTabular.selectAllActiveGrid()) return;
     if (!preview.hidden && window.MDViewerTabular.selectAllActiveMarkdownTable?.()) return;
 
-    const target = !wysiwygView.hidden ? wysiwygEditor : preview;
+    const target = !wysiwygView.hidden
+      ? wysiwygEditor
+      : !jsonlView.hidden
+        ? jsonlView.querySelector(".jsonl-code-preview")
+        : preview;
     if (!target || target.hidden) return;
 
     selectNodeContents(target);
@@ -853,6 +905,7 @@
   function currentFindRoot() {
     if (!dataGrid.hidden) return dataGrid;
     if (!wysiwygView.hidden) return null;
+    if (!jsonlView.hidden) return jsonlView;
     if (!preview.hidden) return preview;
     return null;
   }
@@ -957,6 +1010,11 @@
 
     const active = findState.matches[findState.activeIndex];
     if (active && options.scroll) {
+      let collapsedParent = active.closest("details:not([open])");
+      while (collapsedParent) {
+        collapsedParent.open = true;
+        collapsedParent = collapsedParent.parentElement?.closest("details:not([open])");
+      }
       active.scrollIntoView({ block: "center", inline: "nearest" });
     }
   }
@@ -1488,6 +1546,7 @@
   function currentPdfRoot() {
     if (!dataGrid.hidden) return dataGrid;
     if (!wysiwygView.hidden) return wysiwygEditor;
+    if (!jsonlView.hidden) return jsonlView;
     if (!preview.hidden) return preview;
     return null;
   }
@@ -1613,10 +1672,13 @@
     });
     unwrapFindHighlights(clone);
 
-    clone.querySelectorAll(".table-scroll, .grid-scroll").forEach((element) => {
+    clone.querySelectorAll(".table-scroll, .grid-scroll, .jsonl-scroll").forEach((element) => {
       element.style.height = "auto";
       element.style.maxHeight = "none";
       element.style.overflow = "visible";
+    });
+    clone.querySelectorAll(".jsonl-record, .jsonl-node").forEach((details) => {
+      details.open = true;
     });
 
     const container = document.createElement("div");
@@ -1650,7 +1712,7 @@
   }
 
   function shouldUseLandscapePdf(root, canvas) {
-    if (currentDocument.kind === "csv" || currentDocument.kind === "tsv") return true;
+    if (!dataGrid.hidden) return true;
     return canvas.width > canvas.height && root.scrollWidth > root.clientWidth;
   }
 
@@ -1720,12 +1782,14 @@
 
   function ensureExtension(filename, extension, kind) {
     if (kind === "markdown" && /\.(md|markdown|mdown|mkd)$/i.test(filename)) return filename;
+    if (kind === "jsonl" && /\.(jsonl|ndjson)$/i.test(filename)) return filename;
     return new RegExp(`\\.${extension}$`, "i").test(filename) ? filename : `${filename}.${extension}`;
   }
 
   function extensionForKind(kind) {
     if (kind === "csv") return "csv";
     if (kind === "tsv") return "tsv";
+    if (kind === "jsonl") return "jsonl";
     return "md";
   }
 
@@ -1738,7 +1802,7 @@
     overlay.innerHTML = `
       <div class="help-panel">
         <header class="help-header">
-          <h2>MD/CSV/TSV Viewer Help</h2>
+          <h2>MD/CSV/TSV/JSONL Viewer Help</h2>
           <button type="button" data-close-help>Close</button>
         </header>
         <div class="help-body">
@@ -1749,9 +1813,11 @@
           <h3>Markdown</h3>
           <p>Markdown uses a sanitized GFM/CommonMark renderer with task lists, nested lists, Setext headings, reference links, autolinks, inline HTML, editable table grids, code block copy, Mermaid diagrams, heading section copy/select, TOC, PDF export, dark mode, GitHub style, and full-width mode. Double-click a Markdown table cell to edit it in Grid.</p>
           <h3>Tables</h3>
-          <p>CSV and TSV files open as an interactive grid. Double-click a cell to edit it, paste an Excel range onto the selected cell, Command/Ctrl-click non-adjacent columns to copy them as one Excel-ready block, or right-click to insert/delete rows and columns.</p>
+          <p>CSV, TSV, and JSONL files open as an interactive grid. In a native CSV/TSV editor, use the JSON title-bar button or Command/Ctrl+Alt+J to open a Row Preview beside the source; use the Table Viewer button or Command/Ctrl+Alt+V to reopen the full table as a normal tab. Tables use virtual scrolling when rows × columns exceeds 20,000, so only the current viewport is rendered. Double-click a CSV/TSV cell to edit it, paste an Excel range onto the selected cell, Command/Ctrl-click non-adjacent columns to copy them as one Excel-ready block, or right-click to insert/delete rows and columns.</p>
+          <h3>JSONL / NDJSON</h3>
+          <p>JSONL and NDJSON open in VS Code's native code editor. Use the JSON title-bar button or Command/Ctrl+Alt+J to open a read-only JSONC Row Preview beside it; moving the source cursor updates that preview automatically. Use the Table Viewer button or Command/Ctrl+Alt+V to open the full table as a normal tab. Table Viewer keeps nested object keys as dotted columns while arrays remain JSON values. From Table Viewer, press 1 to return to native code + Row Preview.</p>
           <h3>Shortcuts</h3>
-          <p>1 selects Viewer. Command/Ctrl+E returns from WYSIWYG Edit to Viewer. 2, E, or S opens Raw Edit in VS Code. 3 selects WYSIWYG. Command/Ctrl+F opens find in Viewer. Control+B hides or shows the toolbar. F toggles full width. T toggles TOC. G toggles GitHub style. M toggles theme. Shift+P switches between print-friendly PDF and the current appearance; P exports PDF. ? opens help. [space] opens a hovered Markdown table as Grid. W toggles wrap. V toggles table selection. U toggles Auto/VN/US number parsing. H toggles first row as header. D saves a copy. C copies rendered content. Shift+C copies source. Command/Ctrl+A selects viewer/table content.</p>
+          <p>1 selects Viewer, or returns JSONL Table Viewer to native code + Row Preview. Command/Ctrl+E returns from WYSIWYG Edit to Viewer. 2, E, or S opens Raw Edit in VS Code. 3 selects Markdown WYSIWYG or JSONL Table mode. Command/Ctrl+Alt+J opens CSV/TSV/JSONL Row Preview beside the source; Command/Ctrl+Alt+V opens the full viewer as a normal tab; Command/Ctrl+Alt+[ and ] step between JSONL rows. Command/Ctrl+F opens find in Viewer. Control+B hides or shows the toolbar. F toggles full width. T toggles TOC. G toggles GitHub style. M toggles theme. Shift+P switches between print-friendly PDF and the current appearance; P exports PDF. ? opens help. [space] opens a hovered Markdown table as Grid. W toggles wrap. V toggles table selection. U toggles Auto/VN/US number parsing. H toggles first row as header. D saves a copy. C copies rendered content. Shift+C copies source. Command/Ctrl+A selects viewer/table content.</p>
         </div>
       </div>
     `;
